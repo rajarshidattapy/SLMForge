@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# --- Node / web ---
+node_modules/
+web/dist/
+*.tsbuildinfo
+
+# --- SLMForge runtime artifacts (never commit) ---
+.data/
+artifacts/
+uploads/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- ML / model caches (huge) ---
+.cache/
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.ckpt
+checkpoints/
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

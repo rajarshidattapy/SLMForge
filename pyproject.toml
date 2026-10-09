@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slmforge"
+version = "0.1.0"
+description = "SLMForge — turn a natural-language requirement into a task-specific Small Language Model."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "SLMForge Contributors" }]
+keywords = ["slm", "fine-tuning", "llm", "lora", "qlora", "huggingface", "ollama"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+# Lightweight, always-required control-plane dependencies.
+# Heavy ML libraries live in the `ml` extra so the API can boot without them.
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "sqlalchemy>=2.0",
+  "httpx>=0.27",
+  "python-dotenv>=1.0",
+  "python-multipart>=0.0.9",
+  "typer>=0.12",
+  "rich>=13.7",
+  "jinja2>=3.1",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Training / inference stack. Already present on the reference dev machine.
+ml = [
+  "torch>=2.4",
+  "transformers>=4.44",
+  "datasets>=3.0",
+  "accelerate>=1.0",
+  "peft>=0.13",
+  "trl>=0.12",
+  "bitsandbytes>=0.44; platform_system != 'Darwin'",
+  "scikit-learn>=1.5",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "huggingface_hub>=0.26",
+  "sentence-transformers>=3.0",
+]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "respx>=0.21",
+]
+
+[project.scripts]
+slmforge = "slmforge.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slmforge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["slmforge"]
+mypy_path = "src"
+ignore_missing_imports = true
+warn_unused_ignores = true
