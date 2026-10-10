@@ -94,6 +94,9 @@ class CapabilityOut(BaseModel):
     python_version: str
     platform: str
     sandbox_backend: str
+    #: Non-null when the configured backend cannot actually run (e.g. the Docker
+    #: daemon is stopped). Surfacing this up front beats failing mid-build.
+    sandbox_error: str | None = None
     gpu_available: bool
     gpu_name: str | None = None
     gpu_vram_gb: float | None = None

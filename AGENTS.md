@@ -35,7 +35,8 @@ If a change makes SLMForge look better but report less truthfully, it is wrong.
 | `src/slmforge/pipeline/` | The eight stages (`base.py` = abstraction, `orchestrator.py` = persistence/events). |
 | `src/slmforge/sandbox/` | Isolated execution. `base.py` = interface, `subprocess_backend.py` = current impl. |
 | `src/slmforge/jobs/` | `queue.py` (durable queue), `worker.py` (loop), `handlers.py` (job → stage). |
-| `src/slmforge/integrations/` | `ollama.py`, `huggingface.py`, `llm.py` (planner LLM). |
+| `src/slmforge/net.py` | Retry/backoff for outbound calls. **Route every network call through it.** |
+| `src/slmforge/integrations/` | `hf_cli.py` (primary Hub interface), `parquet.py` (DuckDB profiling), `huggingface.py`, `ollama.py`, `llm.py` (OpenRouter planner). |
 | `src/slmforge/api/` | FastAPI routers, dependencies, HTTP payloads. |
 | `src/slmforge/main.py` | App factory; serves the API and the built SPA. |
 | `web/` | Vite + React + TypeScript dashboard. |
@@ -63,6 +64,9 @@ uv pip install -e '.[dev]' -p .venv/Scripts/python.exe
 .venv/Scripts/python -m ruff check src tests
 .venv/Scripts/python -m ruff format src tests
 .venv/Scripts/python -m mypy src
+
+# Sandbox image (needed by the default `docker` backend)
+docker build -f docker/sandbox.Dockerfile -t slmforge/sandbox:latest .
 
 # Web
 cd web && npm install && npm run dev     # :5173, proxies /api → :8000
@@ -137,6 +141,29 @@ metadata stay consistent.
 - **Windows consoles use a legacy code page**, so writing Unicode (`→`, `—`) to
   stdout raises `UnicodeEncodeError`. `log.force_utf8_stdio()` fixes the streams;
   keep CLI *output* ASCII anyway.
+- **The network resets TLS handshakes with `huggingface.co` under load**
+  (`WinError 10054` / `SSL connect error`), sometimes several attempts in a row.
+  Never call `httpx`/`hf`/DuckDB-remote directly — go through `net.retry_call`,
+  and prefer one remote profile then a single local materialisation over repeated
+  remote queries.
+- **The `hf` CLI is the primary Hub interface** (installed, v1.8.0, authenticated
+  as `sodium16`). It carries its own token, so the app normally needs none.
+  Gotchas learned the hard way:
+  - `hf models list` accepts `--format json`; `hf models info` / `hf datasets info`
+    do **not** and emit JSON already (`run_json` handles both by fallback).
+  - Parameter filtering is `--num-parameters min:0.4B,max:1B`. A hyphenated range
+    returns an empty list silently — use `hf_cli.param_range()`.
+  - `hf datasets sql` shells out to DuckDB, which must be installed; the CLI runs on
+    the **global** interpreter, not `.venv`.
+  - The `hf` CLI binds to the global Python; installing a package in `.venv` does not
+    make it visible to `hf`.
+- **This HF account has no credits** (`isPro: false`, `canPay: false`). `hf jobs`
+  (GPU training) and `hf endpoints` (hosting) are therefore unavailable; treat them
+  as implemented-but-gated paths, not defaults.
+- **Docker Desktop is installed but its daemon is usually stopped.** Start it before
+  using `SLMFORGE_SANDBOX_BACKEND=docker`. WSL2 (`Ubuntu`) is present.
+- **Keep heavy files on F:**, where the project and its 59 GB of free space live.
+  C: has ~35 GB free; model caches and checkpoints will exhaust it.
 - **Vite 8 may bind IPv6 only** (`[::1]:5173`), so `127.0.0.1:5173` is refused while
   `localhost:5173` works. Serve the built UI from FastAPI (`npm run build`, then
   `slmforge serve`) when you want a single process.
@@ -153,6 +180,13 @@ metadata stay consistent.
   and override the session dependency for API tests.
 - Mock external services (`respx` for Ollama/HF/LLM HTTP); never make tests depend
   on a running Ollama, the HF Hub, or a GPU.
+- Sandbox isolation tests (`tests/test_sandbox_docker.py`) need a live Docker
+  daemon and **skip when it is down** — they are the exception, and they are the
+  ones that prove the security posture (network denial, read-only root,
+  non-root user, memory ceiling, timeout cleanup). Run them with Docker started.
+  They assert on `SandboxResult.stdout`, never on the raw log, because the log
+  header echoes the command source and would make such assertions meaningless.
+- Assert on `SandboxResult.stdout`, not on the log file, for the same reason.
 - Training/evaluation tests must be runnable on tiny synthetic data with an
   obviously separable task so CPU CI stays fast.
 - A test that passes because it asserts nothing is a bug.

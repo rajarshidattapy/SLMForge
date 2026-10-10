@@ -22,7 +22,7 @@ def test_ok_is_only_true_for_a_clean_exit(sandbox: SubprocessSandbox, tmp_path: 
     assert result.exit_code == 0
     assert result.timed_out is False
     assert result.logs_path is not None
-    assert "hello" in result.logs_path.read_text(encoding="utf-8")
+    assert "hello" in result.stdout
 
 
 def test_nonzero_exit_is_reported(sandbox: SubprocessSandbox, tmp_path: Path) -> None:
@@ -60,8 +60,10 @@ def test_environment_is_scrubbed(sandbox: SubprocessSandbox, tmp_path: Path) -> 
     try:
         script = "import os; print('LEAK' if os.environ.get('SLMFORGE_TEST_SECRET') else 'CLEAN')"
         result = sandbox.run([sys.executable, "-c", script], work_dir=tmp_path)
-        assert result.logs_path is not None
-        assert "CLEAN" in result.logs_path.read_text(encoding="utf-8")
+        # Assert on program output: the log header echoes the source, so asserting
+        # on the file would "pass" even if the secret leaked.
+        assert "CLEAN" in result.stdout
+        assert "LEAK" not in result.stdout
     finally:
         os.environ.pop("SLMFORGE_TEST_SECRET", None)
 
@@ -71,8 +73,8 @@ def test_explicit_env_is_forwarded(sandbox: SubprocessSandbox, tmp_path: Path) -
     result = sandbox.run(
         [sys.executable, "-c", script], work_dir=tmp_path, env={"JOB_TOKEN": "scoped-123"}
     )
-    assert result.logs_path is not None
-    assert "VALUE=scoped-123" in result.logs_path.read_text(encoding="utf-8")
+    assert "VALUE=scoped-123" in result.stdout
+    assert "VALUE=missing" not in result.stdout
 
 
 def test_output_files_are_listed(sandbox: SubprocessSandbox, tmp_path: Path) -> None:

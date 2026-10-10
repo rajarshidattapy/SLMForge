@@ -50,6 +50,10 @@ class SandboxResult:
     exit_code: int
     duration_s: float
     logs_path: Path | None = None
+    #: Captured program output ONLY — the command echo and header are excluded.
+    #: Asserting on the raw log would also match the echoed source text, so callers
+    #: that need "what did the job say" use this rather than reading the file.
+    stdout: str = ""
     timed_out: bool = False
     killed: bool = False
     peak_memory_mb: float | None = None
@@ -59,6 +63,18 @@ class SandboxResult:
     @property
     def ok(self) -> bool:
         return self.exit_code == 0 and not self.timed_out and not self.killed
+
+
+#: Backends write a short header (`$ <command>` + context) followed by a blank
+#: line. Everything after it is genuine program output.
+LOG_SEPARATOR = "\n\n"
+
+
+def program_output(log_text: str) -> str:
+    """Strip the backend's header, returning only what the job itself printed."""
+    if LOG_SEPARATOR not in log_text:
+        return ""
+    return log_text.split(LOG_SEPARATOR, 1)[1]
 
 
 class Sandbox(ABC):

@@ -7,8 +7,10 @@ language; SLMForge interprets the request, curates a dataset from the purpose,
 finds candidate small models on **Ollama** and the **Hugging Face Hub**, runs
 them in an isolated sandbox, decides whether fine-tuning is even justified,
 picks the optimal adaptation method, generates and runs the training script, and
-hands back a **hosted endpoint** (Hugging Face Inference Endpoint / Space, or a
-local OpenAI-compatible server).
+hands back a **callable endpoint** — a locally hosted OpenAI-compatible server by
+default, or a Hugging Face Inference Endpoint / Space once you have credits.
+Datasets, models, training Jobs and deployments all go through the **official `hf`
+CLI**, which carries its own authentication.
 
 > **Status: early prototype (Stage 0 — foundation).** The architecture, contracts,
 > API skeleton, job queue, sandbox interface and docs are in place. The eight
@@ -90,9 +92,17 @@ Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 
-Requirements: Python ≥ 3.11, and `uv`. Node ≥ 20 for the web UI. Optional:
-Ollama for local candidate models; an NVIDIA GPU with a CUDA build of torch for
-practical fine-tuning.
+Requirements: Python ≥ 3.11 and `uv`; Node ≥ 20 for the web UI.
+
+Before you start:
+
+| | Needed for | Why |
+|---|---|---|
+| `hf` CLI + `hf auth login` | models, datasets, Jobs, endpoints | Our primary Hub interface; it holds the token so the app doesn't |
+| `duckdb` | dataset profiling (`pip install duckdb`) | Also required by `hf datasets sql` (on the **global** interpreter) |
+| OpenRouter key (`OPENROUTER_API_KEY`) | parsing prompts, choosing the method | The planner LLM. Free models are supported and are the default |
+| Docker Desktop running | the `docker` sandbox | Real isolation for untrusted work (dev can use `subprocess`) |
+| A CUDA build of torch | local fine-tuning | The stock build here is CPU-only, so training is impractical without it |
 
 ```bash
 # 1. Environment (inherits the machine's ML stack if present)
@@ -106,7 +116,12 @@ cp .env.example .env        # then edit as needed
 # 3. Check what this machine can actually do
 .venv/Scripts/python -m slmforge doctor
 
-# 4. Create the database and start the API
+# 4. Build the sandbox image (the default `docker` backend needs it)
+docker build -f docker/sandbox.Dockerfile -t slmforge/sandbox:latest .
+# Not running Docker? Set SLMFORGE_SANDBOX_BACKEND=subprocess in .env — but note
+# that mode is process isolation, not a security boundary.
+
+# 5. Create the database and start the API
 .venv/Scripts/python -m slmforge init-db
 .venv/Scripts/python -m slmforge serve --reload
 ```

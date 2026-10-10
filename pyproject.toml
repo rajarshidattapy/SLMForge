@@ -52,6 +52,8 @@ ml = [
   "pandas>=2.2",
   "huggingface_hub>=0.26",
   "sentence-transformers>=3.0",
+  # Dataset profiling and `hf datasets sql`. Small; keeps curation download-free.
+  "duckdb>=1.1",
 ]
 dev = [
   "pytest>=8.0",

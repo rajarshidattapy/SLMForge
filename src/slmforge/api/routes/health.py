@@ -82,10 +82,32 @@ async def capabilities(probe: bool = True) -> CapabilityOut:
             "analyzer cannot run until the server is started or a hosted provider is set."
         )
 
+    # Report the *actual* sandbox state, not just the configured name: a stopped
+    # Docker daemon is exactly the kind of surprise worth surfacing up front.
+    sandbox_backend = settings.sandbox_backend
+    sandbox_error: str | None = None
+    if sandbox_backend == "docker":
+        from ...sandbox.docker_backend import docker_available
+
+        if not docker_available():
+            sandbox_error = (
+                "Docker backend is configured but the daemon is not reachable. "
+                "Start Docker Desktop, or set SLMFORGE_SANDBOX_BACKEND=subprocess "
+                "for a weaker dev-only mode."
+            )
+            warnings.append(sandbox_error)
+    elif sandbox_backend == "hf_jobs":
+        sandbox_error = (
+            "The hf_jobs backend is not implemented yet and requires Hugging Face "
+            "credits; use SLMFORGE_SANDBOX_BACKEND=docker for now."
+        )
+        warnings.append(sandbox_error)
+
     return CapabilityOut(
         python_version=sys.version.split()[0],
         platform=platform.platform(),
-        sandbox_backend=settings.sandbox_backend,
+        sandbox_backend=sandbox_backend,
+        sandbox_error=sandbox_error,
         gpu_available=gpu_available,
         gpu_name=gpu_name,
         gpu_vram_gb=gpu_vram_gb,

@@ -16,10 +16,14 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Env = Literal["local", "dev", "prod"]
-SandboxBackend = Literal["subprocess", "docker"]
-LLMProvider = Literal["ollama", "openai", "anthropic", "none"]
+#: `hf_jobs` runs untrusted work in managed, ephemeral HF containers (needs credits).
+SandboxBackend = Literal["subprocess", "docker", "hf_jobs"]
+#: `openrouter` is a plain OpenAI-compatible gateway and the default planner transport.
+LLMProvider = Literal["openrouter", "ollama", "openai", "anthropic", "none"]
 NetworkPolicy = Literal["deny", "allowlist", "allow"]
 DeployTarget = Literal["hf_endpoint", "hf_space", "local_openai"]
+#: Where the fine-tuned model is actually served from.
+ServeBackend = Literal["openai_compat", "ollama"]
 
 
 class Settings(BaseSettings):
@@ -42,10 +46,26 @@ class Settings(BaseSettings):
     upload_root: Path = Path("./uploads")
 
     # --- Planner LLM (drives the analyzer/planner, not the trained model) ---
-    llm_provider: LLMProvider = "ollama"
-    llm_base_url: str = "http://127.0.0.1:11434/v1"
-    llm_model: str = "llama3.1:8b"
+    # `llm_model` is the reasoning model used for the spec and the training plan
+    # (low volume, high value). `llm_bulk_model` writes synthetic examples
+    # (high volume), so it defaults to a cheap/free model.
+    llm_provider: LLMProvider = "openrouter"
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    llm_bulk_model: str = "google/gemma-4-26b-a4b-it:free"
     llm_api_key: str = ""
+    #: Used when the network or the provider is unavailable, so a build can still
+    #: be specified (and honestly labelled as heuristic) without any API key.
+    llm_allow_heuristic_fallback: bool = True
+
+    # --- Network resilience ---
+    # The reference network resets TLS handshakes with huggingface.co under load,
+    # so every outbound call retries with backoff before being called a failure.
+    network_attempts: int = 5
+    network_base_delay_s: float = 1.0
+    network_max_delay_s: float = 20.0
+    hf_cli_timeout_s: int = 120
+    duckdb_threads: int = 4
 
     # --- Model sources ---
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -65,12 +85,24 @@ class Settings(BaseSettings):
     max_vram_gb: int = 8
     default_method: str = "qlora"
     seed: int = 42
+    #: HF Job flavor used when the sandbox backend is `hf_jobs`. `cpu-basic` is
+    #: the cheapest way to prove the Job path works before spending on a GPU.
+    hf_jobs_flavor: str = "cpu-basic"
+    hf_jobs_image: str = "python:3.12-slim"
 
     # --- Deployment ---
+    # No HF credits on this account, so the default is a locally hosted
+    # OpenAI-compatible endpoint. `hf_endpoint` stays available behind this flag.
     hf_push_enabled: bool = False
     hf_org: str = ""
-    deploy_target: DeployTarget = "hf_endpoint"
+    deploy_target: DeployTarget = "local_openai"
     deploy_require_approval: bool = True
+    serve_backend: ServeBackend = "openai_compat"
+    serve_host: str = "127.0.0.1"
+    serve_port: int = 8100
+    #: Fine-tuned models are pushed to the Hub only when explicitly enabled;
+    #: without credits this is the *artifact* store, not the serving layer.
+    hf_push_on_deploy: bool = False
 
     # --- Web ---
     # `NoDecode` disables pydantic-settings' JSON parsing so a plain

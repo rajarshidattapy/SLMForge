@@ -18,7 +18,7 @@ every stage.** We never build a beautiful UI for a pipeline that cannot run.
 | 1 | Prompt → `MLSpec` (analyzer) | ⬜ Not started |
 | 2 | Dataset curation | ⬜ Not started |
 | 3 | Model discovery & ranking | ⬜ Not started |
-| 4 | Sandbox hardening + baseline | ⬜ Not started |
+| 4 | Docker sandbox + baseline | 🟡 Docker sandbox **done**; baseline harness pending |
 | 5 | Training planner | ⬜ Not started |
 | 6 | Fine-tuning execution | ⬜ Not started |
 | 7 | Evaluation & comparison | ⬜ Not started |
@@ -372,26 +372,84 @@ Work:
 
 ---
 
-## Decisions needed before Stage 1
+## Decisions (settled)
 
-These change the shape of the build, so they are worth settling now.
+Every decision below is now encoded in `config.py` / `.env.example`.
 
-1. **Planner LLM.** Local Ollama only (zero cost, offline, needs a capable local
-   model), or a hosted API (better specs, costs money, sends prompts off-machine)?
-   Current default is Ollama with a heuristic fallback.
-2. **Demo task scope.** Commit to ticket classification + JSON extraction as the
-   supported happy path, or attempt summarisation too? Narrow is far more convincing.
-3. **GPU.** Install a CUDA build of torch (~2.5 GB) to use the RTX 4060, or target
-   a CPU-runnable demo with a tiny model and fewer examples? This decides what
-   "fine-tuning" can realistically mean on this machine.
-4. **Deployment target.** HF Inference Endpoints (paid, real, closest to the pitch),
-   a demo Space (cheap), or local OpenAI-compatible serving (free, but not
-   "hosted")?
-5. **Data sources.** Hugging Face datasets only, or also include a small hand-built
-   seed set for the ticket task so the demo never depends on a third-party dataset
-   staying available?
-6. **Disk.** The C: drive has ~36 GB free; a model cache plus checkpoints can
-   consume that quickly. Confirm the intended cache/artifact volume.
+1. **Planner LLM — OpenRouter, free models.** One `OPENROUTER_API_KEY`, OpenAI-compatible
+   `/chat/completions`, so `integrations/llm.py` needed no rewrite. Verified against the
+   live catalogue: 469 models, **19 free**, including `nvidia/nemotron-3-ultra-550b-a55b:free`
+   (1M ctx, used for the spec and the training-method choice) and
+   `google/gemma-4-26b-a4b-it:free` (used for bulk synthetic generation).
+   The deterministic heuristic fallback stays, so the pipeline demos with no key.
+2. **Demo task — ticket classification, single happy path.** Dataset verified live:
+   **`Tobi-Bueck/customer-support-tickets`**, 61,765 rows, public and ungated,
+   25 MB parquet, columns `subject, body, answer, type, queue, priority, language,
+   version, tag_1..tag_8`. Its `type`/`queue` fields map onto
+   Billing / Technical / Account Access / General. **It is synthetic** ("Synthetic IT
+   Ticket Generator", "no PII"), so it must be labelled as such and must not be the
+   only thing we evaluate on.
+3. **Sandbox — two tiers, activated separately.** `docker` runs untrusted work locally
+   with real filesystem/network isolation; `hf_jobs` runs it in managed ephemeral HF
+   containers, including GPUs. Both sit behind the existing `Sandbox` interface.
+4. **Deployment — local by default.** This HF account has no credits, so the default
+   `deploy_target` is `local_openai`: an OpenAI-compatible server hosting the
+   fine-tuned model. `hf_endpoint` / `hf_space` remain implemented paths, switched on
+   when credits exist.
+5. **Data — Hugging Face first, via the `hf` CLI.** Discovery, parquet URLs, DuckDB
+   profiling, Jobs and endpoints all go through the official `hf` CLI, which also
+   carries its own authentication (`hf auth login`) so the app never holds the token.
+
+## Open blockers1. **No HF credits.** `hf auth whoami` reports `isPro: false`, `canPay: false`,
+   `billingMode: prepaid`. `hf_jobs` (GPU training) and `hf_endpoint` (hosted
+   endpoint) both need a paid plan or prepaid credits. Until then: train locally,
+   serve locally.
+2. **Local GPU needs a CUDA build of torch.** The installed torch is `2.10.0+cpu`, so
+   `torch.cuda.is_available()` is `False` despite the RTX 4060 (8 GB) being present.
+   Local QLoRA on a ~0.5B model is only practical after installing a CUDA wheel
+   (~2.5 GB, free, and F: has ~59 GB free). Otherwise the demo is CPU-only and slow.
+
+### Free alternatives to Hugging Face paid compute
+
+Searched rather than assumed. None of these need a card; all are for the **demo**
+only, so they stay behind the same `Sandbox` interface rather than becoming a
+hard dependency.
+
+| Option | GPU | Quota | Automatable? | Verdict |
+|---|---|---|---|---|
+| **Local RTX 4060 (8 GB)** | Yes | Unlimited | Best | **First choice.** One free CUDA wheel away; no queue, no upload, no data leaves the machine. |
+| **Kaggle Notebooks** | T4 or P100, 16 GB VRAM | ~30 GPU-hours/week, 12 h sessions, stated and visible | Yes — `kagglehub` / `kaggle` CLI runs a notebook, polls status, pulls artifacts back | **Best free cloud option.** A stated quota is far more predictable than Colab's. |
+| **Lightning AI Studio** | T4/L4-class | ~80 free GPU hours | Yes, via its API/CLI | Good fallback if the Kaggle quota runs out mid-week. |
+| **Google Colab** | T4/P100 | 15–30 h/week, *availability-based*, undocumented | Poorly — no stable job API, cells time out | Only for manual exploration, not for the pipeline. |
+| **HF Jobs `cpu-basic`** | — | $0.01/hr | Yes (`hf jobs`) | Cheap but not free; useful only to prove the Job path end-to-end. |
+
+Recommended path: **train on the local 4060**; if that is unavailable, submit the
+same generated training script to **Kaggle** as a managed job. Both reuse the
+`hf_cli.jobs_*`-style shape (submit → poll → pull artifacts), so a `kaggle` backend
+is a small addition to the `Sandbox` abstraction, not a rewrite.
+
+Also worth noting for the *serving* half: it needs no GPU at all — a small
+OpenAI-compatible FastAPI server hosting the fine-tuned model on CPU is enough to
+deliver the demo's "callable endpoint".
+3. **The reference network resets TLS handshakes** with `huggingface.co` under load —
+3. **The reference network resets TLS handshakes** with `huggingface.co` under load —
+   observed repeatedly from both the `hf` CLI and DuckDB, sometimes failing several
+   attempts in a row. Mitigated by `net.retry_call` (backoff + jitter, clear
+   `TransientNetworkError`), and by profiling remotely once and then materialising a
+   single local copy rather than re-querying the Hub in a loop.
+4. **Docker is running now**, and the `docker` sandbox backend is delivered with its
+   isolation tests passing (network denial, read-only root, non-root user, memory
+   ceiling, timeout cleanup). The image is `slmforge/sandbox:latest` (1.03 GB), built
+   from `docker/sandbox.Dockerfile`.
+
+## Still to decide
+
+- **Serving backend.** `local_openai` via a small OpenAI-compatible FastAPI server
+  (no extra tooling, works today) versus exporting GGUF and registering the model with
+  the already-installed Ollama (nicer DX, but adds a conversion step and llama.cpp).
+- **A small real held-out set.** The verified dataset is synthetic; a hand-collected
+  set of real tickets would keep the evaluation honest rather than grading
+  synthetic-with-synthetic.
 
 ---
 

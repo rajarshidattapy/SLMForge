@@ -19,6 +19,41 @@ def test_health_and_capabilities(client: TestClient) -> None:
     assert any("planner LLM" in w for w in body["warnings"])
 
 
+def test_capabilities_report_an_unusable_docker_backend(client, monkeypatch) -> None:
+    """A stopped Docker daemon must be visible up front, not at job time."""
+    from slmforge.config import settings
+    from slmforge.sandbox import docker_backend
+
+    monkeypatch.setattr(settings, "sandbox_backend", "docker")
+    monkeypatch.setattr(docker_backend, "docker_available", lambda: False)
+
+    body = client.get("/api/capabilities").json()
+    assert body["sandbox_backend"] == "docker"
+    assert body["sandbox_error"] is not None
+    assert "Start Docker Desktop" in body["sandbox_error"]
+    assert any("Docker" in w for w in body["warnings"])
+
+
+def test_capabilities_are_clean_when_the_backend_works(client, monkeypatch) -> None:
+    from slmforge.config import settings
+    from slmforge.sandbox import docker_backend
+
+    monkeypatch.setattr(settings, "sandbox_backend", "docker")
+    monkeypatch.setattr(docker_backend, "docker_available", lambda: True)
+
+    body = client.get("/api/capabilities").json()
+    assert body["sandbox_error"] is None
+
+
+def test_hf_jobs_backend_is_flagged_as_unavailable(client, monkeypatch) -> None:
+    from slmforge.config import settings
+
+    monkeypatch.setattr(settings, "sandbox_backend", "hf_jobs")
+    body = client.get("/api/capabilities").json()
+    assert body["sandbox_error"] is not None
+    assert "credits" in body["sandbox_error"]
+
+
 def test_create_list_and_fetch_project(client: TestClient, project: dict) -> None:
     assert project["status"] == "draft"
     assert project["spec"] is None
@@ -64,8 +99,8 @@ def test_pipeline_overview_reports_stage_status(client: TestClient) -> None:
         "evaluate",
         "deploy",
     }
-    # Nothing is implemented yet; the flag must be honest.
-    assert all(s["implemented"] is False for s in stages)
+    # The flag must be honest about what is actually built.
+    assert [s["name"] for s in stages if s["implemented"]] == ["analyze"]
     assert next(s for s in stages if s["name"] == "train")["requires_approval"] is True
 
 
@@ -93,9 +128,29 @@ def test_spec_can_reviewed_and_edited(client: TestClient, project: dict) -> None
 
 
 def test_unimplemented_stage_returns_501(client: TestClient, project: dict) -> None:
-    response = client.post(f"/api/projects/{project['id']}/stages/analyze/run", json={})
+    """An unbuilt stage must say so rather than pretend to succeed."""
+    response = client.post(f"/api/projects/{project['id']}/stages/curate_data/run", json={})
     assert response.status_code == 501
-    assert "AnalyzerStage" in response.json()["detail"] or "analyze" in response.json()["detail"]
+    assert "DatasetStage" in response.json()["detail"] or "curate_data" in response.json()["detail"]
+
+
+def test_analyze_stage_actually_runs(client: TestClient, project: dict) -> None:
+    """Stage 1 is implemented, so it must return a real spec, not a 501."""
+    response = client.post(f"/api/projects/{project['id']}/stages/analyze/run", json={})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["output"]["task_type"] in {"classification", "unsupported"}
+    assert body["output"]["readiness"] in {
+        "ready_for_review",
+        "needs_clarification",
+        "unsupported",
+    }
+
+    # The spec must land on the project row for the dashboard to show.
+    stored = client.get(f"/api/projects/{project['id']}/spec").json()
+    assert stored["spec"] is not None
+    assert stored["status"] == "specified"
 
 
 def test_long_running_stages_are_rejected_synchronously(client: TestClient, project: dict) -> None:

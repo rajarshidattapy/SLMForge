@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from ..log import get_logger
-from .base import ResourceLimits, Sandbox, SandboxResult
+from .base import ResourceLimits, Sandbox, SandboxResult, program_output
 
 logger = get_logger("sandbox.subprocess")
 
@@ -108,10 +108,15 @@ class SubprocessSandbox(Sandbox):
         if error and exit_code == 0:
             exit_code = -1
 
+        captured = ""
+        if log_path.exists():
+            captured = program_output(log_path.read_text(encoding="utf-8", errors="replace"))
+
         return SandboxResult(
             exit_code=exit_code,
             duration_s=duration,
             logs_path=log_path,
+            stdout=captured,
             timed_out=timed_out,
             killed=killed,
             output_files=sorted(p for p in work_dir.rglob("*") if p.is_file()),

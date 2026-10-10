@@ -46,8 +46,17 @@ def test_costly_stages_require_approval() -> None:
 
 
 def test_unimplemented_stages_are_flagged() -> None:
-    # Until a milestone lands, the flag must say so rather than pretend.
-    assert all(stage.implemented is False for stage in PIPELINE)
+    # Stage 1 shipped; every later stage must honestly say so.
+    assert {s.name for s in PIPELINE if not s.implemented} == {
+        StageName.curate_data,
+        StageName.select_model,
+        StageName.baseline,
+        StageName.plan_training,
+        StageName.train,
+        StageName.evaluate,
+        StageName.deploy,
+    }
+    assert get_stage(StageName.analyze).implemented is True
 
 
 def test_run_timed_turns_exceptions_into_failed_results(tmp_path: Path) -> None:
@@ -59,7 +68,8 @@ def test_run_timed_turns_exceptions_into_failed_results(tmp_path: Path) -> None:
         artifact_dir=tmp_path,
         work_dir=tmp_path,
     )
-    result = get_stage(StageName.analyze).run_timed(ctx)
+    # curate_data is still a stub, so its NotImplementedError becomes a failure.
+    result = get_stage(StageName.curate_data).run_timed(ctx)
     assert result.status == "failed"
     assert result.error is not None and "NotImplementedError" in result.error
     assert result.duration_s is not None and result.duration_s >= 0

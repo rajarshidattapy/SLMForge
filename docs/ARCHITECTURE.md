@@ -58,8 +58,8 @@ The eight functional modules from the product brief map as follows.
 | Brief module | Code |
 |---|---|
 | 6.1 Prompt and Task Analyzer | `pipeline/analyzer.py` + `integrations/llm.py` |
-| 6.2 Dataset Discovery and Preparation | `pipeline/datasets.py` + `integrations/huggingface.py` |
-| 6.3 Model Discovery and Compatibility | `pipeline/models.py` + `integrations/ollama.py`, `huggingface.py` |
+| 6.2 Dataset Discovery and Preparation | `pipeline/datasets.py` + `integrations/hf_cli.py`, `parquet.py` |
+| 6.3 Model Discovery and Compatibility | `pipeline/models.py` + `integrations/hf_cli.py` |
 | 6.4 Training Planner | `pipeline/planner.py` |
 | 6.5 Sandboxed Execution Engine | `sandbox/` + `jobs/` |
 | 6.6 Evaluation and Model Selection | `pipeline/baseline.py`, `pipeline/evaluator.py` |
@@ -230,7 +230,47 @@ Uploaded datasets, HF dataset contents, and — most importantly — **generated
 training scripts** are untrusted. They are never imported into or executed by the
 API or worker process.
 
-### 5.2 Current implementation: `SubprocessSandbox`
+### 5.2 The two tiers, and what runs today
+
+Execution is planned as two tiers behind the one `Sandbox` interface:
+
+| Tier | Backend | Used for | Status |
+|---|---|---|---|
+| 1 | `docker` | Untrusted dataset prep, small CPU evals, offline work | **Delivered** |
+| 2 | `hf_jobs` | Fine-tuning and evaluation in managed GPU containers | Interface ready, impl in Stage 6 |
+
+`docker` is the **default**. The factory refuses to silently downgrade: asking for
+`docker` while the daemon is stopped raises with instructions rather than quietly
+running untrusted code in the weaker subprocess mode. `/api/capabilities` reports
+`sandbox_error` so the dashboard shows it before a build starts.
+
+Every container gets the same posture — non-negotiable defaults rather than
+per-job choices:
+
+```
+--read-only                     the image itself cannot be modified
+--tmpfs /tmp                    the only writable scratch space (noexec, 512m)
+--cap-drop ALL                  no Linux capabilities beyond baseline
+--security-opt no-new-privileges
+--user 65534:65534              never root, even if the image defaults to it
+--pids-limit 256                a fork bomb cannot take the host down
+--memory / --memory-swap        hard ceilings, so an OOM kill is not a "clean" exit
+--cpus                          bounded CPU
+--network none|bridge           off unless the job explicitly needs downloads
+--workdir /work                 the job's bind-mounted work dir is the only output path
+```
+
+Jobs must address files with container paths (`/work/train.py`), because the host
+path does not exist inside the image; `DockerSandbox.container_path()` does that
+mapping, and getting it wrong is the classic bug where the script exists on the
+host but the container cannot see it. Containers are removed unconditionally, so a
+timed-out job never holds the bind mount.
+
+The image is `slmforge/sandbox:latest`, built from `docker/sandbox.Dockerfile`:
+audited, slim (Python 3.12 + duckdb + pandas + pyarrow + sklearn), and
+**deliberately without the training stack**. Heavy work belongs on tier 2.
+
+### 5.3 `SubprocessSandbox` (the weaker development mode)
 
 `Sandbox.run(command, work_dir, limits, env, log_path)`:
 
@@ -250,14 +290,14 @@ API or worker process.
 > (`SLMFORGE_SANDBOX_BACKEND=docker`, Stage 4), and it fails loudly today rather
 > than silently downgrading to the weaker mode.
 
-### 5.3 Secret handling
+### 5.4 Secret handling
 
 - Configuration comes from the environment; the repo contains no secrets.
 - `Deployment.auth_ref` stores a *reference* to an API key, never the key.
 - `.gitignore` excludes `.env`, `*.pem`, `*.key`, `.data/`, `artifacts/`.
 - Artifacts and logs are local files under `SLMFORGE_ARTIFACT_ROOT`.
 
-### 5.4 Data protection
+### 5.5 Data protection
 
 - Splits are made with a fixed seed and checked for cross-split near-duplicates, so
   evaluation numbers are not inflated by leakage.
@@ -280,11 +320,24 @@ API or worker process.
 - **Ollama** (`integrations/ollama.py`) — local model inventory (`/api/tags`), plus
   a fully local, zero-cost planner option. Degrades gracefully: an unreachable
   server yields `[]`, never an exception.
-- **Hugging Face** (`integrations/huggingface.py`) — discovery (`list_models`,
-  `list_datasets`), licence normalisation for commercial-use risk
-  (`is_commercial_friendly`), dataset download with `allow_patterns`, and publishing
-  (`create_repo`, `upload_folder`, model card). Imported lazily so the API runs
-  without the ML extra.
+- **`hf` CLI** (`integrations/hf_cli.py`) — the **primary Hub interface**. Wraps the
+  official `hf` v1.8.0 CLI, which already implements parameter-filtered search,
+  parquet URL discovery, managed Jobs, Inference Endpoint lifecycle and resumable
+  uploads. It also carries its own authentication (`hf auth login`), so the app does
+  not have to hold your token at all.
+- **DuckDB profiling** (`integrations/parquet.py`) — schema, row counts, label
+  distributions and filtering, executed as SQL against *remote* parquet. Curation
+  therefore profiles a candidate dataset before deciding to download it, then
+  materialises exactly the rows it keeps in one local write.
+- **Hub SDK** (`integrations/huggingface.py`) — licence normalisation for
+  commercial-use risk (`is_commercial_friendly`), model-card handling, publishing.
+  Imported lazily so the API runs without the ML extra.
+- **Retry** (`net.py`) — every outbound call (CLI, SDK, DuckDB, planner LLM) goes
+  through `retry_call` with exponential backoff and jitter. This is not optional
+  polish: the reference network resets TLS handshakes with `huggingface.co` under
+  load, sometimes several attempts in a row. Exhausted retries raise
+  `TransientNetworkError`, which the UI reports as "the network is unstable"
+  rather than as a product failure.
 
 ---
 
@@ -305,9 +358,15 @@ API or worker process.
 
 1. All eight pipeline stages are documented stubs; `run()` raises
    `NotImplementedError` with its milestone.
-2. `torch` on the reference machine is a CPU-only build, so training there is
-   impractical until a CUDA wheel is installed.
-3. The subprocess sandbox is not a security boundary; Docker is not implemented.
+2. `torch` on the reference machine is `2.10.0+cpu`, so `torch.cuda.is_available()`
+   is `False` despite the RTX 4060 (8 GB) being present and idle. Local fine-tuning
+   is impractical until a CUDA wheel is installed (~2.5 GB; F: has ~59 GB free).
+3. **No HF credits** (`isPro: false`, `canPay: false`). `hf jobs` (managed GPU
+   training) and `hf endpoints` (hosted endpoints) are implemented but gated behind
+   a paid plan, so training and serving default to local paths.
+4. The Docker and `hf_jobs` sandbox backends are not implemented yet; only
+   `subprocess` runs, and it is process isolation, not a security boundary.
+5. Docker Desktop is installed but its daemon is usually stopped.
 4. No Alembic migrations yet — schema changes mean recreating the SQLite file.
 5. Single-worker model: no scheduler, no priority, no per-GPU concurrency control.
 6. Artifact storage is a local directory; no retention policy or object storage yet.
