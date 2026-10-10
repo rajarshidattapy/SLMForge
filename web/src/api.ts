@@ -64,6 +64,22 @@ export type Artifact = {
   created_at: string;
 };
 
+/** The public Hugging Face profile the backend keeps in the session cookie. */
+export type AuthUser = {
+  sub: string;
+  username: string;
+  name: string;
+  avatar_url: string | null;
+  email: string | null;
+};
+
+export type AuthStatus = {
+  enabled: boolean;
+  provider: string;
+  authenticated: boolean;
+  user: AuthUser | null;
+};
+
 export type PipelineStage = {
   name: string;
   label: string;
@@ -119,8 +135,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** Where the "Sign in with Hugging Face" button sends the browser.
+ *
+ * A full-page navigation (not fetch): the backend has to redirect to the Hub and
+ * set the handshake cookie. `next` brings the user back to the origin that
+ * started the flow — in dev that is the Vite server, which the backend allows
+ * because it is a configured CORS origin.
+ */
+export function authLoginUrl(next?: string): string {
+  return `${BASE}/auth/huggingface/login${next ? `?next=${encodeURIComponent(next)}` : ""}`;
+}
+
 export const api = {
   capabilities: () => request<Capabilities>("/capabilities"),
+
+  authStatus: () => request<AuthStatus>("/auth/me"),
+
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
 
   listProjects: () => request<Project[]>("/projects"),
 

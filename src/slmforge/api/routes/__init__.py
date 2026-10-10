@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import deployments, health, projects, stages
+from . import auth, deployments, health, projects, stages
 
 api_router = APIRouter(prefix="/api")
+api_router.include_router(auth.router)
 api_router.include_router(health.router)
 api_router.include_router(projects.router)
 api_router.include_router(stages.router)

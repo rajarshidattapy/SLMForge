@@ -101,6 +101,7 @@ Before you start:
 | `hf` CLI + `hf auth login` | models, datasets, Jobs, endpoints | Our primary Hub interface; it holds the token so the app doesn't |
 | `duckdb` | dataset profiling (`pip install duckdb`) | Also required by `hf datasets sql` (on the **global** interpreter) |
 | OpenRouter key (`OPENROUTER_API_KEY`) | parsing prompts, choosing the method | The planner LLM. Free models are supported and are the default |
+| An HF OAuth app (`HF_CLIENT_ID` + `HF_CLIENT_SECRET`) | “Sign in with Hugging Face” | Optional — the dashboard runs anonymously without it |
 | Docker Desktop running | the `docker` sandbox | Real isolation for untrusted work (dev can use `subprocess`) |
 | A CUDA build of torch | local fine-tuning | The stock build here is CPU-only, so training is impractical without it |
 

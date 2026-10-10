@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Env = Literal["local", "dev", "prod"]
@@ -72,6 +72,27 @@ class Settings(BaseSettings):
     hf_token: str = ""
     hf_home: Path = Path("./.cache/huggingface")
 
+    # --- Sign in with Hugging Face (OAuth / OIDC) ---
+    # Create an OAuth app at https://huggingface.co/settings/applications/new and
+    # register `<public_base_url>/api/auth/huggingface/callback` as a redirect URI
+    # (it must match exactly). Both the bare and SLMFORGE_-prefixed env names are
+    # accepted, so an existing `.env` written for the Hub itself keeps working.
+    hf_client_id: str = Field(
+        default="", validation_alias=AliasChoices("HF_CLIENT_ID", "SLMFORGE_HF_CLIENT_ID")
+    )
+    hf_client_secret: str = Field(
+        default="", validation_alias=AliasChoices("HF_CLIENT_SECRET", "SLMFORGE_HF_CLIENT_SECRET")
+    )
+    #: Scopes requested at authorization time. `profile` gives the username/avatar
+    #: and `email` the address; the access token itself is never stored.
+    hf_oauth_scopes: str = "openid profile email"
+    #: Absolute URL the browser reaches this API on, used to build the redirect_uri.
+    public_base_url: str = "http://127.0.0.1:8000"
+    #: Signs the session cookie. Falls back to the client secret when unset, which
+    #: avoids another mandatory secret but invalidates sessions when it is rotated.
+    session_secret: str = ""
+    session_ttl_s: int = 7 * 24 * 3600
+
     # --- Sandbox ---
     sandbox_backend: SandboxBackend = "subprocess"
     sandbox_image: str = "slmforge/sandbox:latest"
@@ -119,6 +140,29 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def hf_oauth_enabled(self) -> bool:
+        """Whether "Sign in with Hugging Face" is configured for this deployment."""
+        return bool(self.hf_client_id and self.hf_client_secret)
+
+    @property
+    def oauth_redirect_uri(self) -> str:
+        """The redirect_uri; it must match one registered on the HF OAuth app."""
+        return f"{self.public_base_url.rstrip('/')}/api/auth/huggingface/callback"
+
+    @property
+    def session_signing_key(self) -> str:
+        return self.session_secret or self.hf_client_secret
+
+    @property
+    def oauth_scopes(self) -> list[str]:
+        return [scope for scope in self.hf_oauth_scopes.split() if scope]
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        """Send the session cookie over HTTPS only when the public URL is HTTPS."""
+        return self.public_base_url.startswith("https://")
 
     def ensure_dirs(self) -> None:
         """Create the runtime directories SLMForge writes to."""

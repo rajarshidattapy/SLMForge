@@ -1,5 +1,14 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { PipelineStage, ProjectDetail as ProjectDetailType } from "../api";
+import { FilePlanIcon, TrashIcon } from "../icons";
+import {
+  approachOf,
+  baseModelOf,
+  datasetsOf,
+  primaryMetricOf,
+  statusMeta,
+  taskTypeOf,
+} from "../projectMeta";
 import { Pipeline } from "./Pipeline";
 
 type Props = {
@@ -10,28 +19,55 @@ type Props = {
   onDelete: () => void;
 };
 
+type Tab = "spec" | "logs" | "artifacts";
+
 /** The build record: what was asked for, what has run, and what was produced. */
 export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete }: Props) {
+  const [tab, setTab] = useState<Tab>("spec");
+  const status = statusMeta(project.status);
+
   const specJson = useMemo(
     () => (project.spec ? JSON.stringify(project.spec, null, 2) : null),
     [project.spec],
   );
 
+  const facts = [
+    { label: "Task", value: taskTypeOf(project) },
+    { label: "Approach", value: approachOf(project) },
+    { label: "Base model", value: baseModelOf(project) },
+    { label: "Metric", value: primaryMetricOf(project) },
+    { label: "Data", value: datasetsOf(project).join(", ") || null },
+  ].filter((fact): fact is { label: string; value: string } => fact.value !== null);
+
   return (
     <div className="detail">
       <header className="detail__head">
-        <div>
+        <span className="detail__glyph" aria-hidden="true">
+          <FilePlanIcon size={22} />
+        </span>
+        <div className="detail__heading">
           <h2 className="detail__title">{project.name}</h2>
           <p className="detail__meta">
-            <span className={`status status--${project.status}`}>{project.status}</span>
+            <span className={`pill pill--${status.tone}`}>{status.label}</span>
             <span className="detail__id">{project.id.slice(0, 8)}</span>
             <span>{new Date(project.created_at).toLocaleString()}</span>
           </p>
         </div>
-        <button className="btn btn--danger btn--small" onClick={onDelete}>
-          Delete
+        <button className="icon-btn icon-btn--ghost" onClick={onDelete} aria-label="Delete build">
+          <TrashIcon size={18} />
         </button>
       </header>
+
+      {facts.length > 0 && (
+        <dl className="facts">
+          {facts.map((fact) => (
+            <div key={fact.label} className="fact">
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
 
       <blockquote className="detail__prompt">{project.prompt}</blockquote>
 
@@ -42,50 +78,86 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
         onChanged={onChanged}
       />
 
-      <div className="panel">
-        <h2 className="panel__title">Specification</h2>
-        {specJson ? (
-          <pre className="code">{specJson}</pre>
-        ) : (
-          <p className="muted">
-            No specification yet. The analyze stage generates one (and it stays editable before any
-            compute is spent).
-          </p>
-        )}
-      </div>
+      <section className="panel">
+        <div className="tabs" role="tablist">
+          <TabButton id="spec" current={tab} onSelect={setTab} label="Specification" />
+          <TabButton
+            id="logs"
+            current={tab}
+            onSelect={setTab}
+            label={`Build log${project.events.length ? ` (${project.events.length})` : ""}`}
+          />
+          <TabButton
+            id="artifacts"
+            current={tab}
+            onSelect={setTab}
+            label={`Artifacts${project.artifacts.length ? ` (${project.artifacts.length})` : ""}`}
+          />
+        </div>
 
-      <div className="panel">
-        <h2 className="panel__title">Build log</h2>
-        {project.events.length === 0 ? (
-          <p className="muted">No events recorded.</p>
-        ) : (
-          <ul className="events">
-            {project.events.map((event) => (
-              <li key={event.id} className={`events__item events__item--${event.level}`}>
-                <time>{new Date(event.at).toLocaleTimeString()}</time>
-                {event.stage && <span className="events__stage">{event.stage}</span>}
-                <span className="events__message">{event.message}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        {tab === "spec" &&
+          (specJson ? (
+            <pre className="code">{specJson}</pre>
+          ) : (
+            <p className="muted">
+              No specification yet. The analyze stage generates one (and it stays editable before
+              any compute is spent).
+            </p>
+          ))}
 
-      <div className="panel">
-        <h2 className="panel__title">Artifacts</h2>
-        {project.artifacts.length === 0 ? (
-          <p className="muted">No artifacts produced yet.</p>
-        ) : (
-          <ul className="artifacts">
-            {project.artifacts.map((artifact) => (
-              <li key={artifact.id}>
-                <span className="badge">{artifact.kind}</span> {artifact.name}
-                <code className="muted"> {artifact.path}</code>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        {tab === "logs" &&
+          (project.events.length === 0 ? (
+            <p className="muted">No events recorded.</p>
+          ) : (
+            <ul className="events">
+              {project.events.map((event) => (
+                <li key={event.id} className={`events__item events__item--${event.level}`}>
+                  <time>{new Date(event.at).toLocaleTimeString()}</time>
+                  {event.stage && <span className="events__stage">{event.stage}</span>}
+                  <span className="events__message">{event.message}</span>
+                </li>
+              ))}
+            </ul>
+          ))}
+
+        {tab === "artifacts" &&
+          (project.artifacts.length === 0 ? (
+            <p className="muted">No artifacts produced yet.</p>
+          ) : (
+            <ul className="artifacts">
+              {project.artifacts.map((artifact) => (
+                <li key={artifact.id}>
+                  <span className="badge">{artifact.kind}</span> {artifact.name}
+                  <code className="muted"> {artifact.path}</code>
+                </li>
+              ))}
+            </ul>
+          ))}
+      </section>
     </div>
+  );
+}
+
+function TabButton({
+  id,
+  current,
+  onSelect,
+  label,
+}: {
+  id: Tab;
+  current: Tab;
+  onSelect: (tab: Tab) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={current === id}
+      className={`tab ${current === id ? "tab--active" : ""}`}
+      onClick={() => onSelect(id)}
+    >
+      {label}
+    </button>
   );
 }

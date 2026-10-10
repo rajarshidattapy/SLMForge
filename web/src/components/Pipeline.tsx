@@ -38,10 +38,14 @@ export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
   }
 
   return (
-    <div className="panel">
-      <h2 className="panel__title">Pipeline</h2>
+    <section className="panel">
+      <header className="panel__head">
+        <h2 className="panel__title">Pipeline</h2>
+        <span className="muted">Stages marked “not built yet” return 501 by design.</span>
+      </header>
+
       <ol className="pipeline">
-        {stages.map((stage) => {
+        {stages.map((stage, index) => {
           const isNext = stage.name === nextStage;
           return (
             <li
@@ -50,11 +54,12 @@ export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
                 stage.implemented ? "" : "pipeline__step--todo"
               }`}
             >
-              <div className="pipeline__main">
-                <span className="pipeline__label">{stage.label}</span>
+              <span className="pipeline__index" aria-hidden="true">
+                {index + 1}
+              </span>
+              <span className="pipeline__label">{stage.label}</span>
+              <div className="pipeline__meta">
                 <span className="pipeline__name">{stage.name}</span>
-              </div>
-              <div className="pipeline__badges">
                 {!stage.implemented && <span className="badge badge--todo">not built yet</span>}
                 {stage.requires_approval && (
                   <span className="badge badge--approval">needs approval</span>
@@ -62,7 +67,7 @@ export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
                 {isNext && <span className="badge badge--next">next</span>}
               </div>
               <button
-                className="btn btn--small"
+                className="btn btn--small pipeline__action"
                 onClick={() => run(stage, stage.requires_approval)}
                 disabled={busy !== null}
                 title={
@@ -77,9 +82,10 @@ export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
           );
         })}
       </ol>
+
       {message && (
         <p className={`alert alert--${message.tone === "ok" ? "ok" : "error"}`}>{message.text}</p>
       )}
-    </div>
+    </section>
   );
 }
