@@ -233,6 +233,7 @@ def test_non_blocking_questions_do_not_stall_the_build(
     "Is there labeled data?" is Stage 2's job to answer; blocking on it here
     would put an avoidable gate in front of every build.
     """
+
     async def fake_ask(_prompt: str) -> str:
         return json.dumps(
             {
@@ -264,6 +265,121 @@ def test_no_key_means_heuristic_without_touching_the_network(tmp_path: Path) -> 
     assert settings.llm_provider == "none"
     spec = MLSpec.model_validate(_run(TICKET_PROMPT, tmp_path).output)
     assert spec.generated_by == "heuristic"
+
+
+# --- label extraction (the offline path that has to carry the demo) --------
+
+
+CANONICAL_PROMPT = (
+    "Build a small model that classifies customer support tickets into Billing, "
+    "Technical, Account Access or General and returns only a valid JSON object."
+)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        (CANONICAL_PROMPT, ["Billing", "Technical", "Account Access", "General"]),
+        (
+            "Classify the sentiment as positive or negative",
+            ["positive", "negative"],
+        ),
+        (
+            "Route messages into the categories: urgent, normal",
+            ["urgent", "normal"],
+        ),
+        # Nothing is invented when the prompt does not name the labels.
+        ("Assign each ticket to one of four queues", []),
+        ("Build a summarizer for support threads", []),
+    ],
+)
+def test_labels_come_from_the_prompt_never_from_imagination(
+    prompt: str, expected: list[str]
+) -> None:
+    from slmforge.pipeline.analyzer import _infer_labels
+
+    assert _infer_labels(prompt) == expected
+
+
+def test_quoted_labels_still_win_over_an_enumeration() -> None:
+    from slmforge.pipeline.analyzer import _infer_labels
+
+    prompt = 'Sort mail into "Alpha", "Beta" or anything else'
+    assert _infer_labels(prompt) == ["Alpha", "Beta"]
+
+
+def test_the_canonical_prompt_is_ready_not_blocked(tmp_path: Path) -> None:
+    """The demo prompt must not be met with "which labels?" — it names them."""
+    spec = MLSpec.model_validate(_run(CANONICAL_PROMPT, tmp_path).output)
+    assert spec.allowed_labels == ["Billing", "Technical", "Account Access", "General"]
+    assert spec.readiness == "ready_for_review"
+
+
+def test_an_output_shape_question_is_answered_with_the_canonical_default(
+    tmp_path: Path, planner: pytest.MonkeyPatch
+) -> None:
+    """The field name is a decided convention, not something to interrupt the user for."""
+
+    async def fake_ask(_prompt: str) -> str:
+        return json.dumps(
+            {
+                "title": "Ticket router",
+                "summary": "s",
+                "task_type": "classification",
+                "input_description": "ticket text",
+                "allowed_labels": ["Billing", "Technical", "General"],
+                "output": {"format": "json_object"},
+                "open_questions": [
+                    {
+                        "id": "schema",
+                        "question": "What exact JSON schema should the output follow?",
+                        "why": "Field name for the label was not specified.",
+                        "blocking": True,
+                    }
+                ],
+            }
+        )
+
+    planner.setattr(analyzer_module, "_ask_planner", fake_ask)
+    spec = MLSpec.model_validate(_run(TICKET_PROMPT, tmp_path).output)
+
+    assert spec.readiness == "ready_for_review"
+    assert spec.open_questions and spec.open_questions[0].blocking is False
+    assert spec.open_questions[0].default == '{"label": "<one of the allowed labels>"}'
+    assert any("single key" in note for note in spec.assumptions)
+    assert [f.name for f in spec.output.fields] == ["label"]
+    assert spec.output.fields[0].enum == spec.allowed_labels
+
+
+def test_a_question_beyond_field_naming_still_blocks(
+    tmp_path: Path, planner: pytest.MonkeyPatch
+) -> None:
+    """Anything that genuinely changes the contract must still stop the build."""
+
+    async def fake_ask(_prompt: str) -> str:
+        return json.dumps(
+            {
+                "title": "Ticket router",
+                "summary": "s",
+                "task_type": "classification",
+                "input_description": "ticket text",
+                "allowed_labels": ["Billing", "General"],
+                "output": {"format": "json_object"},
+                "open_questions": [
+                    {
+                        "id": "severity",
+                        "question": "Should each ticket be assigned more than one label?",
+                        "why": "Multi-label changes the metric and the output contract.",
+                        "blocking": True,
+                    }
+                ],
+            }
+        )
+
+    planner.setattr(analyzer_module, "_ask_planner", fake_ask)
+    spec = MLSpec.model_validate(_run(TICKET_PROMPT, tmp_path).output)
+    assert spec.readiness == "needs_clarification"
+    assert spec.open_questions[0].blocking is True
 
 
 def test_empty_prompt_is_a_clear_failure(tmp_path: Path) -> None:

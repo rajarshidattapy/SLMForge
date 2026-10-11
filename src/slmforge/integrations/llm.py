@@ -11,6 +11,7 @@ heuristic rather than pretending it reasoned.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -19,12 +20,49 @@ from pydantic import BaseModel, ValidationError
 
 from ..config import settings
 from ..log import get_logger
+from ..net import backoff_delay
 
 logger = get_logger("integrations.llm")
 
 
 class PlannerLLMUnavailable(RuntimeError):
     """Raised when no planner LLM is configured or reachable."""
+
+
+#: Phrases in a provider error that mean "try again", not "your request is wrong".
+RETRYABLE_MARKERS = (
+    "overload",
+    "rate limit",
+    "temporarily",
+    "timeout",
+    "timed out",
+    "unavailable",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+)
+#: HTTP statuses worth another attempt.
+RETRYABLE_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 522, 524}
+
+
+def provider_error(data: Any) -> str | None:
+    """The provider's error message when a *successful* HTTP response carries one.
+
+    OpenRouter (and any OpenAI-compatible gateway in front of a busy upstream) can
+    answer `200 OK` with `{"error": {...}}`. Treating that as a malformed response
+    hides a transient provider problem behind a permanent-looking failure.
+    """
+    if isinstance(data, dict) and isinstance(data.get("error"), dict):
+        error = data["error"]
+        return str(error.get("message") or error.get("code") or "provider error")
+    return None
+
+
+def is_retryable_message(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in RETRYABLE_MARKERS)
 
 
 class ChatMessage(BaseModel):
@@ -91,19 +129,54 @@ class PlannerLLM:
                 "json_schema": {"name": "response", "schema": json_schema, "strict": False},
             }
 
-        try:
-            response = await self._client.post(
-                "/chat/completions", json=payload, headers=self._headers()
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise PlannerLLMUnavailable(f"Planner LLM request failed: {exc}") from exc
+        attempts = max(1, settings.network_attempts)
+        last_error = "no attempt was made"
 
-        data = response.json()
-        try:
-            return data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as exc:
-            raise PlannerLLMUnavailable(f"Unexpected LLM response shape: {data!r}") from exc
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._client.post(
+                    "/chat/completions", json=payload, headers=self._headers()
+                )
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as exc:
+                last_error = f"{exc.response.status_code} {exc}"
+                if exc.response.status_code not in RETRYABLE_STATUSES or attempt == attempts:
+                    raise PlannerLLMUnavailable(
+                        f"Planner LLM request failed: {last_error}"
+                    ) from exc
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                if attempt == attempts:
+                    raise PlannerLLMUnavailable(f"Planner LLM request failed: {exc}") from exc
+            else:
+                error = provider_error(data)
+                if error is None:
+                    try:
+                        return data["choices"][0]["message"]["content"]
+                    except (KeyError, IndexError, TypeError) as exc:
+                        raise PlannerLLMUnavailable(
+                            f"Unexpected LLM response shape: {data!r}"
+                        ) from exc
+                last_error = error
+                if not is_retryable_message(error) or attempt == attempts:
+                    raise PlannerLLMUnavailable(f"Planner LLM provider error: {error}")
+
+            delay = backoff_delay(
+                attempt, settings.network_base_delay_s, settings.network_max_delay_s
+            )
+            logger.warning(
+                "Planner LLM unavailable (attempt %d/%d): %s — retrying in %.1fs",
+                attempt,
+                attempts,
+                last_error,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+        raise PlannerLLMUnavailable(
+            f"Planner LLM request failed after {attempts} attempts: {last_error}"
+        )
 
     async def chat_json_dict(
         self,

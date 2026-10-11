@@ -100,7 +100,7 @@ def test_pipeline_overview_reports_stage_status(client: TestClient) -> None:
         "deploy",
     }
     # The flag must be honest about what is actually built.
-    assert [s["name"] for s in stages if s["implemented"]] == ["analyze"]
+    assert [s["name"] for s in stages if s["implemented"]] == ["analyze", "curate_data"]
     assert next(s for s in stages if s["name"] == "train")["requires_approval"] is True
 
 
@@ -129,9 +129,91 @@ def test_spec_can_reviewed_and_edited(client: TestClient, project: dict) -> None
 
 def test_unimplemented_stage_returns_501(client: TestClient, project: dict) -> None:
     """An unbuilt stage must say so rather than pretend to succeed."""
-    response = client.post(f"/api/projects/{project['id']}/stages/curate_data/run", json={})
+    response = client.post(f"/api/projects/{project['id']}/stages/select_model/run", json={})
     assert response.status_code == 501
-    assert "DatasetStage" in response.json()["detail"] or "curate_data" in response.json()["detail"]
+    assert "select_model" in response.json()["detail"]
+
+
+def test_dataset_planning_runs_but_does_not_advance_the_project(
+    client: TestClient, project: dict
+) -> None:
+    """Planning is free; the project must still be waiting for approval afterwards."""
+    project_id = project["id"]
+    client.put(
+        f"/api/projects/{project_id}/spec",
+        json={
+            "spec": {
+                "title": "Ticket router",
+                "summary": "Route support tickets.",
+                "task_type": "classification",
+                "input_description": "Ticket text",
+                "allowed_labels": ["Billing", "Technical", "Account Access", "General"],
+                "output": {"format": "json_object"},
+            }
+        },
+    )
+    response = client.post(
+        f"/api/projects/{project_id}/stages/curate_data/run",
+        json={"params": {"offline": True}},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["needs_approval"] is True
+    assert body["blocked_on"] == ["approve_dataset_build"]
+
+    detail = client.get(f"/api/projects/{project_id}").json()
+    assert detail["dataset_plan"] is not None, "the plan must persist for review"
+    assert detail["status"] == "specified", "nothing was built, so nothing advanced"
+
+
+def test_a_dataset_build_cannot_run_in_the_request(client: TestClient, project: dict) -> None:
+    """A download belongs on a worker; the API says so instead of blocking."""
+    response = client.post(
+        f"/api/projects/{project['id']}/stages/curate_data/run",
+        json={"params": {"build": True}},
+    )
+    assert response.status_code == 409
+    assert "/jobs" in response.json()["detail"]
+
+
+def test_jobs_can_be_enqueued_listed_and_cancelled(client: TestClient, project: dict) -> None:
+    project_id = project["id"]
+    assert client.get(f"/api/projects/{project_id}/jobs").json() == []
+
+    created = client.post(
+        f"/api/projects/{project_id}/jobs",
+        json={"kind": "dataset_build", "params": {"build": True, "offline": True}},
+    )
+    assert created.status_code == 201, created.text
+    job = created.json()
+    assert job["status"] == "pending"
+    assert job["params"] == {"build": True, "offline": True}
+
+    listed = client.get(f"/api/projects/{project_id}/jobs").json()
+    assert [item["id"] for item in listed] == [job["id"]]
+    events = client.get(f"/api/projects/{project_id}/events").json()
+    assert any("Queued dataset_build job" in event["message"] for event in events)
+
+    cancelled = client.post(f"/api/projects/{project_id}/jobs/{job['id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    # Cancelling twice is a conflict, not a silent success.
+    again = client.post(f"/api/projects/{project_id}/jobs/{job['id']}/cancel")
+    assert again.status_code == 409
+
+
+def test_enqueueing_a_stage_without_a_handler_is_501(client: TestClient, project: dict) -> None:
+    response = client.post(
+        f"/api/projects/{project['id']}/jobs", json={"kind": "training", "approved": True}
+    )
+    assert response.status_code == 501
+    assert "train" in response.json()["detail"]
+
+
+def test_an_unknown_job_kind_is_rejected(client: TestClient, project: dict) -> None:
+    response = client.post(f"/api/projects/{project['id']}/jobs", json={"kind": "not_a_kind"})
+    assert response.status_code == 422
 
 
 def test_analyze_stage_actually_runs(client: TestClient, project: dict) -> None:
@@ -162,10 +244,27 @@ def test_long_running_stages_are_rejected_synchronously(client: TestClient, proj
         assert response.status_code == 409, f"{stage} should not run synchronously"
 
 
-def test_approval_gate_blocks_gated_stage(client: TestClient, project: dict) -> None:
-    # select_model requires approval; without it the request must not execute.
-    response = client.post(f"/api/projects/{project['id']}/stages/select_model/run", json={})
-    assert response.status_code == 428
+def test_approval_gate_blocks_gated_stage(client: TestClient, project: dict, monkeypatch) -> None:
+    """A gated stage must not execute just because someone clicked "run".
+
+    `select_model` is still a stub, so it is marked implemented for this test: the
+    point under test is the approval gate, not the stage body. Without that, the
+    endpoint would (correctly) answer 501 before it ever asks about approval.
+    """
+    from slmforge.models import StageName
+    from slmforge.pipeline import get_stage
+
+    monkeypatch.setattr(get_stage(StageName.select_model), "implemented", True)
+
+    blocked = client.post(f"/api/projects/{project['id']}/stages/select_model/run", json={})
+    assert blocked.status_code == 428
+    assert "approval" in blocked.json()["detail"].lower()
+
+    # With approval the gate opens, and the unimplemented body reports itself.
+    approved = client.post(
+        f"/api/projects/{project['id']}/stages/select_model/run", json={"approved": True}
+    )
+    assert approved.status_code == 501
 
 
 def test_next_step_points_at_first_incomplete_stage(client: TestClient, project: dict) -> None:

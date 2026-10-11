@@ -6,7 +6,7 @@ from pathlib import Path
 
 from slmforge.models import Project, ProjectStatus, StageName
 from slmforge.pipeline import PIPELINE, STAGES, get_stage, next_stage_name
-from slmforge.pipeline.base import StageContext, StageResult
+from slmforge.pipeline.base import Stage, StageContext, StageResult
 
 
 def test_pipeline_order_is_the_documented_workflow() -> None:
@@ -46,9 +46,8 @@ def test_costly_stages_require_approval() -> None:
 
 
 def test_unimplemented_stages_are_flagged() -> None:
-    # Stage 1 shipped; every later stage must honestly say so.
+    # Stages 1 and 2 shipped; every later stage must honestly say so.
     assert {s.name for s in PIPELINE if not s.implemented} == {
-        StageName.curate_data,
         StageName.select_model,
         StageName.baseline,
         StageName.plan_training,
@@ -57,6 +56,7 @@ def test_unimplemented_stages_are_flagged() -> None:
         StageName.deploy,
     }
     assert get_stage(StageName.analyze).implemented is True
+    assert get_stage(StageName.curate_data).implemented is True
 
 
 def test_run_timed_turns_exceptions_into_failed_results(tmp_path: Path) -> None:
@@ -68,8 +68,8 @@ def test_run_timed_turns_exceptions_into_failed_results(tmp_path: Path) -> None:
         artifact_dir=tmp_path,
         work_dir=tmp_path,
     )
-    # curate_data is still a stub, so its NotImplementedError becomes a failure.
-    result = get_stage(StageName.curate_data).run_timed(ctx)
+    # select_model is still a stub, so its NotImplementedError becomes a failure.
+    result = get_stage(StageName.select_model).run_timed(ctx)
     assert result.status == "failed"
     assert result.error is not None and "NotImplementedError" in result.error
     assert result.duration_s is not None and result.duration_s >= 0
@@ -78,3 +78,57 @@ def test_run_timed_turns_exceptions_into_failed_results(tmp_path: Path) -> None:
 def test_stage_result_ok_defaults() -> None:
     assert StageResult().status == "succeeded"
     assert StageResult().needs_approval is False
+
+
+# --- approval gates --------------------------------------------------------
+
+
+class _GatedStage(Stage):
+    """A stage that produces a reviewable artifact but is not finished."""
+
+    name = StageName.curate_data
+    label = "Gated"
+
+    def run(self, ctx: StageContext) -> StageResult:
+        return StageResult(
+            output={"plan": "draft"},
+            summary="Plan ready for review",
+            needs_approval=True,
+            blocked_on=["approve_dataset_build"],
+        )
+
+
+class _DoneStage(_GatedStage):
+    name = StageName.select_model
+
+    def run(self, ctx: StageContext) -> StageResult:
+        return StageResult(output={"chosen": "model"}, summary="Chosen")
+
+
+def test_a_stage_waiting_for_approval_records_output_but_does_not_advance(
+    session,
+) -> None:
+    """A plan is worth persisting; a completed step is what advances the project."""
+    from slmforge.pipeline.orchestrator import Orchestrator
+
+    project = Project(id="gate1", name="p", prompt="hi", status=ProjectStatus.specified)
+    session.add(project)
+    session.commit()
+
+    result = Orchestrator(session).run_stage(project, _GatedStage())
+    assert result.status == "succeeded"
+    session.refresh(project)
+    assert project.dataset_plan == {"plan": "draft"}
+    assert project.status == ProjectStatus.specified, "an unapproved step is not complete"
+
+
+def test_a_completed_stage_does_advance_the_project(session) -> None:
+    from slmforge.pipeline.orchestrator import Orchestrator
+
+    project = Project(id="gate2", name="p", prompt="hi", status=ProjectStatus.data_ready)
+    session.add(project)
+    session.commit()
+
+    Orchestrator(session).run_stage(project, _DoneStage())
+    session.refresh(project)
+    assert project.status == ProjectStatus.model_selected

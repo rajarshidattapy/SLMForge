@@ -83,7 +83,27 @@ def run_stage(
             ),
         )
 
+    # Planning a dataset is cheap (one remote profile). Building one downloads and
+    # rewrites files, so it goes to the worker: a slow Hub read must not occupy a
+    # request thread until the client times out.
+    if stage_name is StageName.curate_data and payload.params.get("build"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Building a dataset downloads data; enqueue it with "
+                "POST /api/projects/{project_id}/jobs (kind=dataset_build) and let a "
+                "worker run it. Run the stage without `build` to review the plan first."
+            ),
+        )
+
     stage = get_stage(stage_name)
+    # Answer "is this built?" before "did you approve it?": asking a user to approve
+    # work that cannot run yet is a worse experience than a plain 501.
+    if not stage.implemented:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f"Stage '{stage_name.value}' is not implemented yet. See docs/ROADMAP.md.",
+        )
     if stage.requires_approval and not payload.approved:
         raise HTTPException(
             status_code=status.HTTP_428_PRECONDITION_REQUIRED,

@@ -117,6 +117,59 @@ def test_run_json_does_not_add_format_when_info_already_returns_json(monkeypatch
     assert "--format" not in calls[0]
 
 
+def test_run_json_asks_for_json_when_the_command_prints_a_table(monkeypatch) -> None:
+    """`datasets parquet` defaults to a table: verified against the real CLI.
+
+    Getting this wrong breaks every dataset build, so it is pinned by a test rather
+    than left to a command whitelist that silently drifts.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if "--format" in args:
+            return hf_cli.CLIResult(0, '[{"url": "https://x/0000.parquet"}]', "")
+        return hf_cli.CLIResult(0, "SUBSET  SPLIT URL  SIZE\ndefault train https://x 1", "")
+
+    monkeypatch.setattr(hf_cli, "run", fake_run)
+    urls = hf_cli.dataset_parquet_urls("org/ds")
+    assert urls == ["https://x/0000.parquet"]
+    assert ["--format" in args for args in calls] == [False, True]
+
+
+def test_run_json_still_reports_a_real_failure_from_the_plain_command(monkeypatch) -> None:
+    """A refused flag must not hide the actual error output."""
+
+    def fake_run(args, **kwargs):
+        if "--format" in args:
+            raise hf_cli.HFCLIError("Error: No such option: --format")
+        return hf_cli.CLIResult(0, "no json here", "")
+
+    monkeypatch.setattr(hf_cli, "run", fake_run)
+    with pytest.raises(hf_cli.HFCLIError, match="no json here"):
+        hf_cli.run_json(["datasets", "info", "org/ds"])
+
+
+def test_dataset_info_reads_the_snake_case_licence(monkeypatch) -> None:
+    """`datasets info` returns `card_data`, not `cardData` — verified live."""
+    monkeypatch.setattr(
+        hf_cli,
+        "dataset_info",
+        lambda dataset_id: {"id": dataset_id, "card_data": {}, "tags": ["license:cc-by-nc-4.0"]},
+    )
+    assert hf_cli.dataset_license("org/ds") == "cc-by-nc-4.0"
+
+    monkeypatch.setattr(
+        hf_cli,
+        "dataset_info",
+        lambda dataset_id: {"id": dataset_id, "card_data": {"license": "apache-2.0"}},
+    )
+    assert hf_cli.dataset_license("org/ds") == "apache-2.0"
+
+    monkeypatch.setattr(hf_cli, "dataset_info", lambda dataset_id: {"id": dataset_id})
+    assert hf_cli.dataset_license("org/ds") is None, "unknown must not read as licensed"
+
+
 def test_dataset_parquet_urls_extracts_urls(monkeypatch) -> None:
     monkeypatch.setattr(
         hf_cli,

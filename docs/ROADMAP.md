@@ -15,9 +15,9 @@ every stage.** We never build a beautiful UI for a pipeline that cannot run.
 | Stage | Theme | Status |
 |---|---|---|
 | 0 | Foundation | ✅ Complete |
-| 1 | Prompt → `MLSpec` (analyzer) | ⬜ Not started |
-| 2 | Dataset curation | ⬜ Not started |
-| 3 | Model discovery & ranking | ⬜ Not started |
+| 1 | Prompt → `MLSpec` (analyzer) | ✅ Complete |
+| 2 | Dataset curation | ✅ Complete |
+| 3 | Model discovery & ranking | ⬜ **Next up** |
 | 4 | Docker sandbox + baseline | 🟡 Docker sandbox **done**; baseline harness pending |
 | 5 | Training planner | ⬜ Not started |
 | 6 | Fine-tuning execution | ⬜ Not started |
@@ -62,7 +62,97 @@ Exit criteria — all met:
 
 ---
 
-## Stage 1 — Prompt → `MLSpec` (the analyzer)
+## Stage 1 — Prompt → `MLSpec` (the analyzer) ✅ Complete
+
+**Goal:** turn a sentence into a reviewed, editable specification.
+
+Delivered:
+
+- `AnalyzerStage` with both paths — the planner LLM (JSON schema, validation, repair)
+  and a deterministic heuristic — never blended, always labelled in `generated_by`.
+- Prompt template plus support, ambiguity and high-stakes gates; out-of-scope
+  requests are refused with a reason.
+- Label extraction from quoted terms **and** unquoted enumerations ("…into Billing,
+  Technical, Account Access or General…"), which is how the demo prompt is written.
+- Output-shape questions ("what should the JSON look like?") are answered with the
+  canonical single-label shape and recorded as an assumption, so a runnable build is
+  not blocked on a convention the platform already decided. Questions that really do
+  change the contract still block.
+- Planner-LLM failures are retried with backoff, including the OpenRouter case of an
+  error payload delivered with HTTP 200; a genuinely bad reply still falls back.
+
+Exit criteria — met, verified live: the ticket prompt yields four labels,
+`task_type=classification`, `output.format=json_object`, a primary metric and
+`readiness=ready_for_review`; an ambiguous prompt still asks; an out-of-scope prompt is
+refused honestly.
+
+---
+
+## Stage 2 — Dataset curation ✅ Complete
+
+**Goal:** from spec to real, trustworthy train/validation/test files.
+
+Delivered:
+
+- Two modes in one stage, selected by `params`: **plan** (discovery, scoring, one
+  remote DuckDB profile, no download) and **build** (`params={"build": true}`).
+  A plan persists on the project, reports `needs_approval`, and deliberately does
+  **not** advance it to `data_ready`; the orchestrator now refuses to advance past a
+  stage that is still waiting for a decision.
+- Discovery: a hand-verified curated catalog plus Hub search leads, each with a
+  transparent four-term fit score and a rationale string. Non-catalogued hits are
+  offered as leads only — no column guessing.
+- Materialisation: one projected remote read per source (`SELECT concat_ws(...)`),
+  written locally once, then worked on entirely offline. Retried, and retry-safe
+  (a half-written file cannot be read back as success).
+- Label mapping onto the spec's labels, as an audit trail: every raw value is `keep`,
+  `map` or `drop`, each with a reason, and a mapping onto a label the spec does not
+  list is dropped rather than forced.
+- Quality: empty labels, too-short text, exact duplicates, suspected PII (counted as a
+  *kind*, never copied into the report), class balance, and a near-duplicate leakage
+  check across splits that removes leaks and says how many.
+- Deterministic, label-stratified, seeded splits; byte-identical output on a re-run
+  (asserted on the files themselves).
+- Uploads (JSONL/CSV with a column mapper) treated as untrusted: type whitelist, size
+  cap, row cap, `errors="replace"` decoding.
+- A `DatasetCard` with per-source provenance, licences, synthetic fraction, file
+  hashes and the quality issues; every number in it describes the files that were
+  written, so totals equal the split sizes.
+- `target_examples` is an approval boundary: the build delivers that many at most,
+  allocated proportionally so the source's class balance survives.
+- Long builds are queued: `POST /api/projects/{id}/jobs` (kind `dataset_build`),
+  claimed and run by the worker; the synchronous endpoint refuses a build with a 409.
+
+Exit criteria — met, verified live: the ticket prompt produced a plan (5 candidates,
+fit 0.825), an approved build of 3,998 examples (train 2,799 / val 400 / test 799) from
+**`Tobi-Bueck/customer-support-tickets`**, and a card that reports the two leaks it
+removed, the cc-by-nc-4.0 licence, the 100% synthetic share, and the one class the
+dataset cannot support.
+
+### What the live run taught us (recorded, not hidden)
+
+1. **The demo dataset cannot support "Account Access".** Its `queue` column holds 52
+   values (Technical Support, Product Support, Customer Service, Billing and Payments,
+   plus a long tail of generic content categories); none maps onto account or login
+   issues. The plan and the card both say so, and the verdict is `marginal` rather than
+   a flattering `sufficient`. Options: re-specify with three labels, or upload examples.
+2. **The licence is `cc-by-nc-4.0`** — non-commercial. It is fine for the demo and
+   disqualifying for a commercial deployment; the plan surfaces that as a warning.
+3. **The dataset is synthetic end to end** (`synthetic_fraction = 1.0`), so the
+   evaluation must not treat it as ground truth. A small real held-out set stays on the
+   "still to decide" list below.
+4. **The Hub CLI is inconsistent** (`datasets parquet` prints a table unless asked for
+   JSON; `datasets info` rejects the flag). The client now tries, adapts, and only then
+   reports a parse failure — pinned by tests, because getting it wrong breaks every
+   build.
+5. **One session per job.** Completing a job through a second session writes nothing,
+   leaving a finished job reading as `running`. There is now a regression test for it.
+
+---
+
+## Superseded planning notes (kept for context)
+
+### Stage 1 — original plan
 
 **Goal:** turn a sentence into a reviewed, editable specification.
 
@@ -99,7 +189,7 @@ the only downstream dependency, so keep changes additive.
 
 ---
 
-## Stage 2 — Dataset curation
+### Stage 2 — original plan
 
 **Goal:** from spec to real, trustworthy train/validation/test files.
 
@@ -124,18 +214,20 @@ Work:
 8. **Sufficiency verdict** — `sufficient` / `marginal` / `insufficient`, and when
    insufficient, ask the user for examples instead of proceeding on rubbish.
 
-**Exit criteria**
+**Still open from this plan (Stage 2.5, not blocking the demo):**
 
-- The ticket example yields ≥1 usable public dataset **or** a clear "insufficient
-  data" verdict with a request for uploads.
-- Duplicate and unmappable rows are removed with counts and examples in the card.
-- No near-duplicate appears across train/test (asserted by a test).
-- Re-running the same plan produces byte-identical splits (same seed, sorted output).
+- Embedding/MinHash near-duplicate detection beyond word shingles (shingles are
+  cheap and caught 2–7 real leaks; a semantic check would catch more).
+- Optional, explicitly approved synthetic top-up for a class with no source data; the
+  current answer is "no source rows for that label", which is the honest one.
+- Cross-source label-map editing in the UI (the API already accepts an edited plan).
+- Schema-mismatch reporting for uploads (the mapper names the columns; it does not yet
+  validate types).
 
 **Risks:** irrelevant datasets → mitigation: fit rationale + explicit approval.
 Licence encumbrance → mitigation: `is_commercial_friendly` + warning surfaced at
-plan review. Slow downloads on limited disk → mitigation: `allow_patterns` and
-streaming, plus a configurable cache location.
+plan review. Slow downloads on limited disk → mitigation: one projected read per
+source plus a configurable cache location.
 
 ---
 
@@ -384,11 +476,13 @@ Every decision below is now encoded in `config.py` / `.env.example`.
    The deterministic heuristic fallback stays, so the pipeline demos with no key.
 2. **Demo task — ticket classification, single happy path.** Dataset verified live:
    **`Tobi-Bueck/customer-support-tickets`**, 61,765 rows, public and ungated,
-   25 MB parquet, columns `subject, body, answer, type, queue, priority, language,
-   version, tag_1..tag_8`. Its `type`/`queue` fields map onto
-   Billing / Technical / Account Access / General. **It is synthetic** ("Synthetic IT
-   Ticket Generator", "no PII"), so it must be labelled as such and must not be the
-   only thing we evaluate on.
+   one parquet file, columns `subject, body, answer, type, queue, priority, language,
+   version, tag_1..tag_8`. **It is synthetic** ("Synthetic IT Ticket Generator",
+   "no PII"), so it must be labelled as such and must not be the only thing we
+   evaluate on. Two facts learned when building on it, both surfaced automatically:
+   its licence is **`cc-by-nc-4.0` (non-commercial)**, and its `queue` column cannot
+   produce an **Account Access** class (52 raw values, none about accounts or logins),
+   so the four-label spec is only three-quarters supported by this source.
 3. **Sandbox — two tiers, activated separately.** `docker` runs untrusted work locally
    with real filesystem/network isolation; `hf_jobs` runs it in managed ephemeral HF
    containers, including GPUs. Both sit behind the existing `Sandbox` interface.
@@ -400,7 +494,9 @@ Every decision below is now encoded in `config.py` / `.env.example`.
    profiling, Jobs and endpoints all go through the official `hf` CLI, which also
    carries its own authentication (`hf auth login`) so the app never holds the token.
 
-## Open blockers1. **No HF credits.** `hf auth whoami` reports `isPro: false`, `canPay: false`,
+## Open blockers
+
+1. **No HF credits.** `hf auth whoami` reports `isPro: false`, `canPay: false`,
    `billingMode: prepaid`. `hf_jobs` (GPU training) and `hf_endpoint` (hosted
    endpoint) both need a paid plan or prepaid credits. Until then: train locally,
    serve locally.
@@ -432,7 +528,6 @@ Also worth noting for the *serving* half: it needs no GPU at all — a small
 OpenAI-compatible FastAPI server hosting the fine-tuned model on CPU is enough to
 deliver the demo's "callable endpoint".
 3. **The reference network resets TLS handshakes** with `huggingface.co` under load —
-3. **The reference network resets TLS handshakes** with `huggingface.co` under load —
    observed repeatedly from both the `hf` CLI and DuckDB, sometimes failing several
    attempts in a row. Mitigated by `net.retry_call` (backoff + jitter, clear
    `TransientNetworkError`), and by profiling remotely once and then materialising a
@@ -441,6 +536,10 @@ deliver the demo's "callable endpoint".
    isolation tests passing (network denial, read-only root, non-root user, memory
    ceiling, timeout cleanup). The image is `slmforge/sandbox:latest` (1.03 GB), built
    from `docker/sandbox.Dockerfile`.
+5. **The free planner model is intermittently overloaded** (OpenRouter forwards a
+   provider 503 as a *200 response with an error payload*). Retried with backoff now;
+   when it is exhausted the analyzer falls back to the heuristic and says so. The
+   demo therefore does not depend on the planner being up.
 
 ## Still to decide
 

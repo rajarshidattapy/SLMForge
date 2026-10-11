@@ -108,10 +108,12 @@ def _condense(text: str, limit: int = 300) -> str:
 def run_json(args: list[str], **kwargs: Any) -> Any:
     """Run an `hf` subcommand and parse its output as JSON.
 
-    `--format json` is *not* universally supported: `list` commands need it, but
-    `info` commands already emit JSON and reject the flag with "No such option".
-    So try the command as given, and only add the flag if the plain output will
-    not parse.
+    The CLI is inconsistent, and guessing which commands behave how is how this
+    breaks: `datasets parquet` prints a **table** unless told `--format json`,,
+    while `datasets info` already emits JSON and **rejects** the flag with "No such
+    option". So: prefer the output as given, ask for JSON only when it will not
+    parse, and if the flag itself is refused, fall back to the plain command once
+    more before reporting a parse failure with the output we actually saw.
     """
     if "--format" in args:
         return _parse_json(run(args, **kwargs), args)
@@ -125,7 +127,13 @@ def run_json(args: list[str], **kwargs: Any) -> Any:
     except json.JSONDecodeError:
         pass
 
-    return _parse_json(run([*args, "--format", "json"], **kwargs), args)
+    try:
+        return _parse_json(run([*args, "--format", "json"], **kwargs), args)
+    except HFCLIError as exc:
+        # Either the flag is unsupported here, or the command genuinely failed; the
+        # plain re-read distinguishes the two and reports the useful output.
+        logger.debug("`--format json` unavailable for `hf %s`: %s", " ".join(args), exc)
+    return _parse_json(run(args, **kwargs), args)
 
 
 def _parse_json(result: CLIResult, args: list[str]) -> Any:
@@ -229,10 +237,39 @@ def list_datasets(search: str | None = None, *, limit: int = 20) -> list[dict[st
 
 
 def dataset_info(dataset_id: str) -> dict[str, Any]:
-    """Fetch dataset metadata: gated flag, licence, size, siblings, sha."""
-    args = ["datasets", "info", dataset_id, "--expand", "cardData"]
+    """Fetch dataset metadata: gated flag, licence, size, siblings, sha.
+
+    Note the response uses **snake_case** keys (`card_data`, not `cardData`), unlike
+    the `models list` payload — read fields defensively rather than assuming shape.
+    """
+    args = ["datasets", "info", dataset_id, "--expand", _DATASET_INFO_FIELDS]
     data = run_json(args)
     return data if isinstance(data, dict) else {}
+
+
+#: `--expand` is optional, but asking for everything we use avoids a second call.
+_DATASET_INFO_FIELDS = "downloads,likes,tags,gated,cardData,sha,lastModified,siblings"
+
+
+def dataset_license(dataset_id: str) -> str | None:
+    """The dataset's declared licence, from `card_data` or the `license:` tag.
+
+    A Hub dataset commonly declares its licence in one of two places and we must not
+    guess when neither is present: `None` means *unknown*, which is a verdict the
+    caller has to handle, not a licence we may assume.
+    """
+    info = dataset_info(dataset_id)
+    card = info.get("card_data") or info.get("cardData") or {}
+    if isinstance(card, dict):
+        licence = card.get("license")
+        if isinstance(licence, list):
+            licence = licence[0] if licence else None
+        if licence:
+            return str(licence)
+    for tag in info.get("tags") or []:
+        if isinstance(tag, str) and tag.startswith("license:"):
+            return tag.split(":", 1)[1]
+    return None
 
 
 def dataset_parquet_urls(

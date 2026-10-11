@@ -199,16 +199,33 @@ The foundation (Stage 0) is complete: config, DB + schema, stage contracts,
 orchestrator, job queue and worker, sandbox interface, integrations, API,
 CLI, web scaffold and docs.
 
-The eight pipeline stages are declared and documented but their `run()` bodies
-raise `NotImplementedError` with the milestone that will implement them. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for the agenda, exit criteria and order.
+**Stages 1 and 2 are implemented and verified live** (the rest are still stubs):
+
+- Stage 1 `analyzer.py` — prompt → `MLSpec`, planner-LLM path plus a deterministic
+  fallback, support/ambiguity/high-stakes gates, `generated_by` records which path ran.
+- Stage 2 `datasets.py` — **two modes selected by `ctx.params`**: a *plan* (discovery,
+  scoring, one remote DuckDB profile, no download, returns `needs_approval=True` so
+  the project does not advance) and a *build* (`params={"build": true}`) that
+  materialises JSONL splits plus a `DatasetCard`. A build downloads, so it must go
+  through a `dataset_build` job — the synchronous endpoint answers 409.
+
+Stages 3–8 (`select_model`, `baseline`, `plan_training`, `train`, `evaluate`, `deploy`)
+still raise `NotImplementedError` and report `implemented: false`, which the API turns
+into an honest `501`. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the agenda, exit
+criteria and order.
 
 When implementing a stage:
 
 1. Read its docstring in `src/slmforge/pipeline/<stage>.py` — it is the spec.
 2. Implement the algorithm; keep the persistence out of it.
-3. Wire any long-running part as a job handler in `jobs/handlers.py`.
-4. Flip `implemented: True` in `api/routes/stages.py::pipeline_overview`.
+3. Wire any long-running part as a job handler in `jobs/handlers.py`, and give it a
+   `POST /api/projects/{id}/jobs` kind in `api/routes/jobs.py` if the user needs to
+   start it.
+4. Set `implemented = True` on the **stage class** (`pipeline/<stage>.py`).
+   `api/routes/stages.py::pipeline_overview` reads that flag — there is nothing to
+   edit in the API for it.
 5. Update the stage docstring, `docs/ROADMAP.md` status and `README.md` if the
    user-facing behaviour changed.
-6. Add tests and run `pytest`, `ruff` and `mypy`.
+6. Add tests and run `pytest`, `ruff` and `mypy`; if you touched Stage 1 or 2, also run
+   `scripts/demo_smoke.py` against a live API and worker, because the unit suite mocks
+   the world away.

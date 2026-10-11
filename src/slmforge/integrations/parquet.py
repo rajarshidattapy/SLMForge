@@ -102,14 +102,19 @@ def schema(urls: list[str] | str, *, attempts: int = 8) -> list[dict[str, str]]:
     return retry_call(_once, attempts=attempts, description="parquet schema")
 
 
-def row_count(urls: list[str] | str, *, attempts: int = 8) -> int:
+def row_count(urls: list[str] | str, *, attempts: int = 8, threads: int | None = None) -> int:
     """Total row count."""
-    rows = query(urls, "SELECT COUNT(*) FROM data", attempts=attempts)
+    rows = query(urls, "SELECT COUNT(*) FROM data", attempts=attempts, threads=threads)
     return int(rows[0][0]) if rows else 0
 
 
 def value_counts(
-    urls: list[str] | str, column: str, *, limit: int = 50, attempts: int = 8
+    urls: list[str] | str,
+    column: str,
+    *,
+    limit: int = 50,
+    attempts: int = 8,
+    threads: int | None = None,
 ) -> dict[str, int]:
     """Distribution of a column, used for label mapping and class balance."""
     safe = column.replace('"', "")
@@ -117,23 +122,29 @@ def value_counts(
         f'SELECT CAST("{safe}" AS VARCHAR) AS v, COUNT(*) AS n '
         f"FROM data GROUP BY 1 ORDER BY n DESC LIMIT {int(limit)}"
     )
-    rows = query(urls, sql, attempts=attempts)
+    rows = query(urls, sql, attempts=attempts, threads=threads)
     return {(str(r[0]) if r[0] is not None else ""): int(r[1]) for r in rows}
 
 
 def profile(
-    urls: list[str] | str, *, label_column: str | None = None, attempts: int = 8
+    urls: list[str] | str,
+    *,
+    label_column: str | None = None,
+    attempts: int = 8,
+    threads: int | None = None,
 ) -> dict[str, Any]:
     """A compact, reviewable profile of a dataset: shape, columns and labels."""
     cols = schema(urls, attempts=attempts)
-    total = row_count(urls, attempts=attempts)
+    total = row_count(urls, attempts=attempts, threads=threads)
     result: dict[str, Any] = {
         "rows": total,
         "columns": cols,
         "column_names": [c["name"] for c in cols],
     }
     if label_column and any(c["name"] == label_column for c in cols):
-        result["label_distribution"] = value_counts(urls, label_column, attempts=attempts)
+        result["label_distribution"] = value_counts(
+            urls, label_column, attempts=attempts, threads=threads
+        )
     return result
 
 
@@ -144,6 +155,8 @@ def materialize(
     *,
     fmt: str = "parquet",
     attempts: int = 8,
+    threads: int | None = None,
+    description: str = "dataset materialization",
 ) -> Path:
     """Run one query and write the result locally.
 
@@ -166,14 +179,19 @@ def materialize(
     statement = f"COPY (WITH data AS (SELECT * FROM {source}) {sql}) TO '{target}' ({options})"
 
     def _once() -> Path:
-        con = _connect()
+        # A retry must start from a clean file: DuckDB refuses to overwrite by
+        # default, and a half-written file from the previous attempt would be
+        # silently read back as a successful download. Retries are expected here
+        # (this network drops TLS handshakes), so this is the normal path.
+        out_path.unlink(missing_ok=True)
+        con = _connect(threads=threads)
         try:
             con.execute(statement)
         finally:
             con.close()
         return out_path
 
-    path = retry_call(_once, attempts=attempts, description="dataset materialization")
+    path = retry_call(_once, attempts=attempts, description=description)
     logger.info("Materialized dataset -> %s (%s)", path, fmt)
     return path
 

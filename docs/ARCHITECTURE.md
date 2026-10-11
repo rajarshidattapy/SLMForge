@@ -184,19 +184,28 @@ failing at click time.
 
 Two flags shape the user experience:
 
-- `requires_approval` — the orchestrator/API refuses to run the stage without an
-  explicit `approved=true` (`HTTP 428` otherwise).
+- `requires_approval` — the API refuses to run the stage without an explicit
+  `approved=true` (`HTTP 428` otherwise). Asked *after* the implemented check, so a
+  user is never told to approve work that cannot run yet (`501`).
 - Long stages (`train`, `baseline`, `evaluate`) cannot be called synchronously at
   all — the API returns `409` and they must go through the queue, so an HTTP
-  request can never hang for an hour.
+  request can never hang for an hour. A dataset **build** is refused synchronously
+  for the same reason (it downloads); planning one is allowed, because it only
+  profiles remotely.
+
+A stage can also return `needs_approval=True`, which is how a stage reports "I
+produced something reviewable, and I have not finished". The output is still
+persisted, but the project does **not** advance: `_apply_result` returns early. This
+is what keeps Stage 2's plan from looking like a completed step.
 
 ### 4.2 Orchestrator
 
 `pipeline/orchestrator.py` is the only module that mutates project state for the
 pipeline. For each run it: creates a `StageRun`, emits a start event, builds the
 context, executes the stage, records status/output/error/duration, emits a result
-event, and — on success — copies the output onto the project row and advances the
-project status (`_STAGE_TO_COLUMN`, `_STAGE_TO_STATUS`).
+event, and — on success *and* when the stage is not waiting for approval — copies the
+output onto the project row and advances the project status (`_STAGE_TO_COLUMN`,
+`_STAGE_TO_STATUS`).
 
 ### 4.3 Queue and worker
 
@@ -212,6 +221,14 @@ project status (`_STAGE_TO_COLUMN`, `_STAGE_TO_STATUS`).
 `jobs/worker.py` polls, dispatches to a handler by `JobKind`, and is written so a
 throwing handler can never kill the loop. `run_once()` exists to make the worker
 testable without threads or sleeps.
+
+**The handler and the queue share one session** (`queue.session`). A handler that
+opens a second session and completes the job through it writes nothing — the `job`
+instance belongs to the queue's session — and the finished job then reads as
+`running` forever. There is a regression test for exactly that.
+
+Approved stage parameters travel in `job.resources["params"]` (the rest of that dict
+is the resource *request*), so the thing a user approved is the thing the worker runs.
 
 ### 4.4 Idempotency and cancellation
 
@@ -299,11 +316,19 @@ audited, slim (Python 3.12 + duckdb + pandas + pyarrow + sklearn), and
 
 ### 5.5 Data protection
 
-- Splits are made with a fixed seed and checked for cross-split near-duplicates, so
-  evaluation numbers are not inflated by leakage.
+- Splits are made with a fixed seed and checked for cross-split near-duplicates (word
+  shingles, Jaccard ≥ 0.85), so evaluation numbers are not inflated by leakage. Leaks
+  are removed from the evaluation splits and reported as an `error`-severity issue
+  with a count; on the demo dataset that check removed 2–7 rows per build.
+- `target_examples` is an approval boundary: the build delivers that many at most, so
+  a source cannot silently quadruple the training the user agreed to pay for.
 - Dataset provenance (source, licence, transformations, synthetic flag) is recorded
   per contributing source; synthetic examples are labelled and never counted as
-  ground truth.
+  ground truth. The demo dataset reports `synthetic_fraction = 1.0`, and its
+  `cc-by-nc-4.0` licence is surfaced as a commercial-use warning.
+- Every number on the card describes the files that were written (totals equal the
+  split sizes, labels sum to the total), so an auditor can reconcile it against the
+  JSONL rather than trusting a summary.
 - High-stakes domains are flagged in `MLSpec.is_high_stakes` and never silently
   treated as an ordinary build.
 - Deletion controls for uploads/artifacts are a Stage 9 deliverable and are called
@@ -328,7 +353,9 @@ audited, slim (Python 3.12 + duckdb + pandas + pyarrow + sklearn), and
 - **DuckDB profiling** (`integrations/parquet.py`) — schema, row counts, label
   distributions and filtering, executed as SQL against *remote* parquet. Curation
   therefore profiles a candidate dataset before deciding to download it, then
-  materialises exactly the rows it keeps in one local write.
+  materialises exactly the rows it keeps in one local write. Retries delete the
+  target file first: on a network that drops TLS handshakes, a retry is the normal
+  path, and a half-written file must never be read back as a successful download.
 - **Hub SDK** (`integrations/huggingface.py`) — licence normalisation for
   commercial-use risk (`is_commercial_friendly`), model-card handling, publishing.
   Imported lazily so the API runs without the ML extra.
@@ -356,20 +383,29 @@ audited, slim (Python 3.12 + duckdb + pandas + pyarrow + sklearn), and
 
 ## 8. Known limitations (honest list)
 
-1. All eight pipeline stages are documented stubs; `run()` raises
-   `NotImplementedError` with its milestone.
+1. **Stages 3–8 are documented stubs.** `run()` raises `NotImplementedError` with its
+   milestone, and the API reports `implemented: false` so the UI disables them
+   honestly. Stages 1 (analyzer) and 2 (dataset curation) are implemented and were
+   verified live, not just unit-tested.
 2. `torch` on the reference machine is `2.10.0+cpu`, so `torch.cuda.is_available()`
    is `False` despite the RTX 4060 (8 GB) being present and idle. Local fine-tuning
    is impractical until a CUDA wheel is installed (~2.5 GB; F: has ~59 GB free).
 3. **No HF credits** (`isPro: false`, `canPay: false`). `hf jobs` (managed GPU
-   training) and `hf endpoints` (hosted endpoints) are implemented but gated behind
-   a paid plan, so training and serving default to local paths.
-4. The Docker and `hf_jobs` sandbox backends are not implemented yet; only
-   `subprocess` runs, and it is process isolation, not a security boundary.
-5. Docker Desktop is installed but its daemon is usually stopped.
-4. No Alembic migrations yet — schema changes mean recreating the SQLite file.
-5. Single-worker model: no scheduler, no priority, no per-GPU concurrency control.
-6. Artifact storage is a local directory; no retention policy or object storage yet.
-7. Endpoint lifecycle (stop/delete) returns `501` until Stage 8.
-8. No authentication on the API — it binds loopback and is single-user by
+   training) and `hf endpoints` (hosted endpoints) are gated behind a paid plan, so
+   training and serving default to local paths.
+4. The `hf_jobs` sandbox backend is not implemented (it needs credits). `docker` **is**
+   implemented and is the default; `subprocess` remains a development fast path that
+   is process isolation, not a security boundary. Docker Desktop's daemon is often
+   stopped, and `/api/capabilities` says so rather than failing at job time.
+5. No Alembic migrations yet — schema changes mean recreating the SQLite file.
+6. Single-worker model: no scheduler, no priority, no per-GPU concurrency control.
+7. Artifact storage is a local directory; no retention policy or object storage yet.
+8. Endpoint lifecycle (stop/delete) returns `501` until Stage 8.
+9. No authentication on the API — it binds loopback and is single-user by
    assumption. Multi-user isolation is out of MVP scope.
+10. The demo dataset cannot support an "Account Access" class, and is entirely
+    synthetic and non-commercially licensed. Those are reported by the pipeline, not
+    worked around; see Stage 2 in [ROADMAP.md](ROADMAP.md).
+11. Dataset curation has no synthetic top-up and no semantic (embedding) duplicate
+    detection; the shingle-based leakage check is cheap and caught real leaks, but it
+    is not a substitute for either. Both are recorded as Stage 2.5 work.

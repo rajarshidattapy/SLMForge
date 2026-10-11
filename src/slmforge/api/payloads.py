@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..models import JobKind
 from ..schemas import MLSpec
 
 
@@ -41,6 +42,36 @@ class StageRunResponse(BaseModel):
     needs_approval: bool = False
     error: str | None = None
     output: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnqueueJobRequest(BaseModel):
+    """Queue a long-running stage for a worker instead of running it in-request."""
+
+    kind: JobKind
+    #: Stage parameters, e.g. `{"build": True, "selected": ["hf:..."]}` for a dataset
+    #: build. The worker passes them straight to the stage.
+    params: dict[str, Any] = Field(default_factory=dict)
+    approved: bool = Field(
+        default=False, description="Explicit approval for stages that gate on it"
+    )
+    max_attempts: int = Field(default=1, ge=1, le=5)
+
+
+class JobOut(BaseModel):
+    """State of a queued job, including why it last failed."""
+
+    id: str
+    kind: str
+    status: str
+    attempts: int
+    max_attempts: int
+    claimed_by: str | None = None
+    exit_code: int | None = None
+    logs_path: str | None = None
+    error: str | None = None
+    params: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class EventOut(BaseModel):

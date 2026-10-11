@@ -129,6 +129,16 @@ class Orchestrator:
         column = _STAGE_TO_COLUMN.get(stage_name)
         if column and result.output:
             setattr(project, column, result.output)
+        # The stage produced something (a plan, a draft) but is still waiting on a
+        # human decision. Record the output, but do not let the project advance past
+        # a step that has not actually been completed.
+        if result.needs_approval:
+            logger.info(
+                "Stage %s needs approval (%s); project status unchanged",
+                stage_name.value,
+                ", ".join(result.blocked_on) or "no reason given",
+            )
+            return
         status = _STAGE_TO_STATUS.get(stage_name)
         if status:
             project.status = status

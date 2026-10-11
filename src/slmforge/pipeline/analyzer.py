@@ -48,6 +48,7 @@ from ..models import StageName
 from ..schemas import (
     ClarifyingQuestion,
     EvaluationPlan,
+    FieldSpec,
     MLSpec,
     OutputFormat,
     OutputSpec,
@@ -336,7 +337,20 @@ def _infer_task(prompt: str) -> TaskType:
 
 
 def _infer_labels(prompt: str) -> list[str]:
-    """Pull the user's own labels out of quoted terms, preserving order."""
+    """Pull the user's own labels out of the prompt, preserving their order.
+
+    Two shapes are recognised, quoted first because it is unambiguous:
+
+    1. Quoted terms: `into "Billing", "Technical"`.
+    2. An unquoted enumeration introduced by a cue word: `into Billing, Technical,
+       Account Access or General and return JSON`.
+
+    The second shape is how people actually write the requirement the product is
+    built for, and missing it would send every such request down the
+    "no labels" path. Nothing is inferred beyond what the user named: an ambiguous
+    phrase such as "one of four queues" yields no labels, and the analyzer asks
+    instead of inventing them.
+    """
     seen: list[str] = []
     for match in QUOTED_TERM.finditer(prompt):
         label = match.group(1).strip()
@@ -346,6 +360,85 @@ def _infer_labels(prompt: str) -> list[str]:
             seen.append(label)
     if len(seen) >= 2:
         return seen
+    return _enumerated_labels(prompt)
+
+
+#: Words that introduce a list of categories rather than a further instruction.
+LABEL_CUE = re.compile(
+    r"\b(?:into|among|between|as|(?:the\s+)?(?:labels?|classes|categories|options|queues|buckets)\s*[:=]?)\b",
+    re.IGNORECASE,
+)
+#: Separators inside such a list.
+LABEL_SPLIT = re.compile(r"\s*(?:,|;|/|\bor\b|\band\b)\s*", re.IGNORECASE)
+#: The list ends where the next instruction begins — these are not labels.
+CLAUSE_STARTS = (
+    "return",
+    "returns",
+    "output",
+    "respond",
+    "reply",
+    "give",
+    "provide",
+    "include",
+    "print",
+    "format",
+    "use",
+    "make",
+    "ensure",
+    "with",
+    "that",
+    "which",
+    "then",
+    "please",
+    "and it",
+)
+MAX_LABEL_WORDS = 4
+#: Bare nouns that introduce a list rather than being part of it.
+CUE_WORDS = frozenset(
+    {
+        "labels",
+        "label",
+        "classes",
+        "class",
+        "categories",
+        "category",
+        "options",
+        "queues",
+        "buckets",
+    }
+)
+
+
+def _enumerated_labels(prompt: str) -> list[str]:
+    """Labels from an unquoted list, or `[]` when the prompt does not name any."""
+    sentence = prompt.splitlines()[0]
+    for cue in LABEL_CUE.finditer(sentence):
+        tail = sentence[cue.end() :]
+        tail = re.split(r"[.!?]", tail, maxsplit=1)[0]
+        if not tail.strip():
+            continue
+        if tail.lstrip()[:1] in {'"', "'", "\u201c", "\u2018"}:
+            continue  # quoting is handled with more confidence elsewhere
+        # A nested cue ("into the categories: urgent, normal") must not become part of
+        # the first label, so cut at a colon that sits before the first separator.
+        head, comma, rest = tail.partition(",")
+        if ":" in head:
+            tail = head.split(":")[-1] + comma + rest
+        candidates: list[str] = []
+        for chunk in LABEL_SPLIT.split(tail):
+            label = chunk.strip().strip("\"'\u201c\u201d\u2018\u2019").strip()
+            if not label:
+                continue
+            lowered = label.lower()
+            if lowered in {"json", "schema", "valid json object"}:
+                continue
+            if lowered.startswith(CLAUSE_STARTS) or len(label.split()) > MAX_LABEL_WORDS:
+                break
+            if not candidates and lowered.removeprefix("the ") in CUE_WORDS:
+                continue  # a bare cue word introduces the list, it is not in it
+            candidates.append(label)
+        if len(candidates) >= 2:
+            return list(dict.fromkeys(candidates))
     return []
 
 
@@ -456,6 +549,8 @@ def _gate(spec: MLSpec, prompt: str) -> None:
         spec.readiness = "needs_clarification"
         return
 
+    _resolve_output_schema_questions(spec)
+
     if not spec.open_questions:
         spec.readiness = "ready_for_review"
     else:
@@ -464,6 +559,66 @@ def _gate(spec: MLSpec, prompt: str) -> None:
             if any(q.blocking for q in spec.open_questions)
             else "ready_for_review"
         )
+
+
+#: The platform's canonical single-label output shape. Stage 2 writes training
+#: records in exactly this form and the later stages read it back, so it is a
+#: decided convention rather than an open question.
+CANONICAL_LABEL_JSON = '{"label": "<one of the allowed labels>"}'
+OUTPUT_SHAPE_QUESTION = re.compile(
+    r"\b(json|schema|field|key|structure|shape|format|naming)\b", re.IGNORECASE
+)
+
+
+def _resolve_output_schema_questions(spec: MLSpec) -> None:
+    """Answer "what should the JSON look like?" with the canonical shape.
+
+    A single-label classification spec with JSON output already has a decided
+    contract, and the platform is the authority on it. Making the user re-type the
+    field name would not be more transparent — the assumption is recorded and shown
+    next to the spec either way — it would only stop a runnable build for a question
+    the product can answer. Questions that go beyond naming (extra fields, confidence
+    scores, multi-label) still block, because those really do change the contract.
+    """
+    if spec.task_type is not TaskType.classification:
+        return
+    if spec.output.format is not OutputFormat.json_object:
+        return
+    if len(spec.allowed_labels) < 2:
+        return
+
+    answered = False
+    for question in spec.open_questions:
+        if not question.blocking:
+            continue
+        if not OUTPUT_SHAPE_QUESTION.search(f"{question.question} {question.why or ''}"):
+            continue
+        question.blocking = False
+        question.default = CANONICAL_LABEL_JSON
+        question.why = (
+            f"{question.why or ''} Defaulted to the platform's canonical single-label "
+            "output, which the dataset, training and evaluation stages all use."
+        ).strip()
+        answered = True
+
+    if not answered:
+        return
+
+    assumption = (
+        f'Output is a JSON object with the single key "label" ({CANONICAL_LABEL_JSON}); '
+        "no confidence score or extra fields. Edit the spec to change this."
+    )
+    if assumption not in spec.assumptions:
+        spec.assumptions.append(assumption)
+    if not spec.output.fields:
+        spec.output.fields = [
+            FieldSpec(
+                name="label",
+                type="enum",
+                description="The predicted category",
+                enum=list(spec.allowed_labels),
+            )
+        ]
 
 
 def _why_unsupported(prompt: str) -> list[str]:
