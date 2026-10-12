@@ -132,3 +132,28 @@ def test_a_completed_stage_does_advance_the_project(session) -> None:
     Orchestrator(session).run_stage(project, _DoneStage())
     session.refresh(project)
     assert project.status == ProjectStatus.model_selected
+
+
+def test_run_stage_holds_no_open_transaction_during_execution(session) -> None:
+    """A stage can spend minutes on Hub retries while the API and the worker
+    share one SQLite file. Holding an open write transaction for all of it keeps
+    a RESERVED lock, so any concurrent writer fails with 'database is locked'."""
+    from slmforge.pipeline.orchestrator import Orchestrator
+
+    seen: dict[str, bool] = {}
+
+    class _ProbingStage(Stage):
+        name = StageName.analyze
+        label = "Probing"
+
+        def run(self, ctx: StageContext) -> StageResult:
+            seen["in_transaction"] = session.in_transaction()
+            return StageResult(output={"ok": True}, summary="done")
+
+    project = Project(id="lock1", name="p", prompt="hi", status=ProjectStatus.draft)
+    session.add(project)
+    session.commit()
+
+    result = Orchestrator(session).run_stage(project, _ProbingStage())
+    assert result.status == "succeeded"
+    assert seen["in_transaction"] is False

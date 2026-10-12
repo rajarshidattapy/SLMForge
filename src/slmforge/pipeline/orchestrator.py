@@ -101,6 +101,13 @@ class Orchestrator:
         self.session.commit()
 
         self.emit(project.id, f"Stage '{stage.label}' started", stage=stage.name.value)
+        # Commit the "started" event *before* the stage runs. A run can spend
+        # minutes on Hub retries/downloads, and an open write transaction would
+        # hold a RESERVED lock on the shared SQLite file for all of it — so any
+        # concurrent writer (worker heartbeat, a second click on Run) fails with
+        # "database is locked" once the 5 s busy_timeout is exceeded.
+        self.session.commit()
+
         ctx = self.build_context(project, stage, params=params, upstream=upstream)
         result = stage.run_timed(ctx)
 

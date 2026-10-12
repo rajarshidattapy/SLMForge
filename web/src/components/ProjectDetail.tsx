@@ -1,5 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { PipelineStage, ProjectDetail as ProjectDetailType } from "../api";
+import { DatasetPanel } from "./DatasetPanel";
+import { JobsPanel } from "./JobsPanel";
 import { Pipeline } from "./Pipeline";
 
 type Props = {
@@ -12,10 +14,22 @@ type Props = {
 
 /** The build record: what was asked for, what has run, and what was produced. */
 export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete }: Props) {
+  const [jobsTick, setJobsTick] = useState(0);
   const specJson = useMemo(
     () => (project.spec ? JSON.stringify(project.spec, null, 2) : null),
     [project.spec],
   );
+  const spec = (project.spec ?? {}) as Record<string, unknown>;
+  const readiness = typeof spec["readiness"] === "string" ? spec["readiness"] : null;
+  const generatedBy = typeof spec["generated_by"] === "string" ? spec["generated_by"] : null;
+  const labels = Array.isArray(spec["allowed_labels"])
+    ? (spec["allowed_labels"] as unknown[]).map(String).join(" · ")
+    : null;
+
+  function refreshed() {
+    onChanged();
+    setJobsTick((n) => n + 1);
+  }
 
   return (
     <div className="detail">
@@ -39,20 +53,35 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
         projectId={project.id}
         stages={stages}
         nextStage={nextStage}
-        onChanged={onChanged}
+        onChanged={refreshed}
       />
 
       <div className="panel">
         <h2 className="panel__title">Specification</h2>
         {specJson ? (
-          <pre className="code">{specJson}</pre>
+          <>
+            <p className="muted" style={{ marginBottom: 8 }}>
+              {labels ?? "No labels yet"}
+              {readiness ? ` · ${readiness}` : ""}
+              {generatedBy ? ` · via ${generatedBy}` : ""}
+            </p>
+            <pre className="code">{specJson}</pre>
+          </>
         ) : (
           <p className="muted">
-            No specification yet. The analyze stage generates one (and it stays editable before any
+            No specification yet. Run the analyze stage above (and it stays editable before any
             compute is spent).
           </p>
         )}
       </div>
+
+      <DatasetPanel
+        projectId={project.id}
+        datasetPlan={(project.dataset_plan ?? null) as Record<string, unknown> | null}
+        onChanged={refreshed}
+      />
+
+      <JobsPanel projectId={project.id} refreshToken={jobsTick} onChanged={onChanged} />
 
       <div className="panel">
         <h2 className="panel__title">Build log</h2>

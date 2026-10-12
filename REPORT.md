@@ -1,99 +1,173 @@
-# SLMForge — status report
+# SLMForge — what it is and how to run it
 
-*Snapshot: 11 October 2026. One page; the detail lives in [README.md](README.md),
-[docs/ROADMAP.md](docs/ROADMAP.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).*
-
----
-
-## What the project is
-
-SLMForge turns a sentence into a task-specific Small Language Model:
-
-```
-Describe → Specify → Prepare Data → Select Model → Baseline
-        → Plan → Fine-tune → Evaluate → Deploy → Callable endpoint
-```
-
-You describe the model you need in plain English; SLMForge writes a reviewable spec,
-curates a dataset, ranks candidate small models, measures a baseline, decides whether
-fine-tuning is even justified, runs the training in a sandbox, compares before/after,
-and hands back an endpoint.
-
-Two rules define it: **evidence over enthusiasm** (a build that correctly ends in
-"don't fine-tune" is a success, not a failure), and **transparency and consent** (every
-costly or irreversible action has an approval gate, a pre-flight estimate and a
-plain-English record of what was chosen and why).
-
-It is a **deliberate demo scope**: one honest happy path (support-ticket
-classification), not a production platform.
+*For someone seeing this repo for the first time. Snapshot: 12 October 2026.
+Detail lives in [README.md](README.md), [docs/ROADMAP.md](docs/ROADMAP.md) and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).*
 
 ---
 
-## What is done
+## 1. What this is (30 seconds)
+
+**SLMForge turns one English sentence into a task-specific Small Language Model.**
+
+You write something like:
+
+> "Build a small model that classifies customer support tickets into Billing,
+> Technical, Account Access or General and returns only a valid JSON object."
+
+SLMForge then walks a pipeline and shows its work at every step:
+
+```
+Describe -> Specify -> Prepare Data -> Select Model -> Baseline
+        -> Plan -> Fine-tune -> Evaluate -> Deploy -> Callable endpoint
+```
+
+Two rules define the product:
+
+1. **Evidence over enthusiasm.** Success is "the adapted model beat the baseline
+   on held-out data" — or an honest "don't fine-tune". A training job that exits
+   0 proves nothing by itself.
+2. **Transparency and consent.** Costly or irreversible steps (downloading data,
+   training, deploying) have an approval gate, a pre-flight estimate, and a
+   plain-English record of what was chosen and why.
+
+Scope is deliberately narrow: **one honest demo path** (support-ticket
+classification), not a production ML platform. "Works only up to the demo state"
+is a design decision — every stage must prove itself on a real run before the
+next one starts.
+
+---
+
+## 2. What works today (and what does not)
 
 | Area | State |
 |---|---|
-| **Stage 0 — Foundation** | ✅ Config, DB + contracts, orchestrator, job queue/worker, sandbox interface, FastAPI control plane, CLI, web shell, docs |
-| **Stage 1 — Analyze** | ✅ Prompt → `MLSpec` via the planner LLM, with a deterministic offline fallback, support/ambiguity/high-stakes gates, honest `generated_by` |
-| **Stage 2 — Curate data** | ✅ Plan → approve → build: discovery with scored candidates, live remote profiling, label-mapping audit trail, dedupe, PII counts, seeded stratified splits, leakage removal, `DatasetCard` with hashes and provenance |
-| **Sandbox** | ✅ Real Docker boundary (network denial, read-only root, non-root user, memory ceiling, timeout cleanup), subprocess kept as the dev fast path |
-| **Stages 3–8** | ⬜ Stubs that answer `501` honestly — model selection, baseline, training plan, fine-tune, evaluation, deployment |
+| Foundation (config, DB, pipeline contracts, job queue + worker, sandbox interface, API, CLI, dashboard shell) | Done |
+| Stage 1 — Analyze: prompt to editable `MLSpec` (planner LLM, plus an offline heuristic fallback labelled in `generated_by`) | Done |
+| Stage 2 — Curate data: reviewable dataset plan, approve, then a worker build producing `train/validation/test.jsonl` + `DatasetCard` | Done |
+| Sandbox: real Docker boundary (network denial, read-only root, non-root user, memory/time limits); subprocess kept as dev fast path | Done |
+| Stages 3-8 (model ranking, baseline, training plan, fine-tune, evaluation, deployment) | Not built — the API answers `501` honestly and the UI marks them "not built yet" |
 
-**Quality gates:** 218 tests passing, `ruff` and `mypy` clean (51 source files),
-11 Docker isolation tests passing against a live daemon.
+Last verified live run (real API + worker + Hub + planner LLM): the ticket prompt
+produced a 4-label spec, a 5-candidate dataset plan (top fit 0.825), and an
+approved build of **3,998 examples** (train 2,799 / validation 400 / test 799)
+with hashes and row counts reconciled against the files on disk.
 
-**Verified live, not just unit-tested** (`scripts/demo_smoke.py`, real API + worker +
-Hub + planner LLM): the ticket prompt produced a spec with its four labels and
-`ready_for_review`, then a dataset plan of 5 candidates (fit 0.825), then an approved
-build of **3,998 examples** (train 2,799 / validation 400 / test 799) with hashes and
-row counts reconciled against the files.
+The pipeline also reports uncomfortable facts instead of hiding them: the demo
+dataset cannot support an "Account Access" class (`marginal`, error-severity
+issue), is 100% synthetic, and is licensed `cc-by-nc-4.0` (fine for the demo,
+disqualifying for commercial deployment).
 
-Four real bugs were found by running it for real and fixed, each with a regression
-test: jobs completing through a second session (finished jobs read as `running`), a
-mis-guessed `--format json` that broke every dataset build, a planner outage reported
-as permanent instead of retried, and a build that delivered 4× the approved example
-count.
+Quality gates: 218 tests, `ruff check`, `ruff format --check` and `mypy` clean
+(51 source files); 11 Docker isolation tests pass against a live daemon.
 
 ---
 
-## What the pipeline reports about itself
+## 3. How to run it (5 minutes to a working dashboard)
 
-Findings the system surfaces rather than papers over:
+### Prerequisites
 
-- The demo dataset **cannot support an "Account Access" class** — reported as an
-  `error`-severity issue with a `marginal` verdict instead of a flattering pass.
-- That dataset is **100% synthetic** (`synthetic_fraction = 1.0`).
-- Its licence is **`cc-by-nc-4.0` (non-commercial)** — fine for the demo,
-  disqualifying for a commercial deployment.
-- 2 near-duplicates were found across train/test per build and removed.
+- Python 3.11+, [`uv`](https://docs.astral.sh/uv/), Node 20+
+- `hf` CLI authenticated (`hf auth login`) and `duckdb` where `hf` can see it
+  (both on the **global** interpreter, not `.venv`)
+- Docker Desktop running (or set `SLMFORGE_SANDBOX_BACKEND=subprocess` for a
+  weaker dev-only mode)
 
----
-
-## What is not done
-
-- Stages 3–8 (next up: model ranking), so no baseline, training or deployment yet.
-- Stage 2.5 backlog: semantic duplicate detection, an explicitly approved synthetic
-  top-up, upload schema-type validation.
-- Dashboard depth: the API drives everything, but the UI still needs the dataset
-  review step and build-record views.
-
-**Environment constraints:** torch is a CPU-only build (RTX 4060 present but inert
-until a CUDA wheel is installed), the HF account has no credits, and the free planner
-model is intermittently overloaded — retried with backoff, then it falls back to the
-heuristic and says so. Free GPU alternatives (local CUDA torch → Kaggle →
-Lightning AI) are researched in the roadmap.
-
----
-
-## How to run it
+### Setup
 
 ```bash
+git clone <repo-url> SLMForge && cd SLMForge
+
+# Windows (Git Bash) — POSIX uses .venv/bin/python
+uv venv --system-site-packages .venv
+uv pip install -e '.[dev]' -p .venv/Scripts/python.exe
+
+cp .env.example .env   # then edit as needed; no key required for the offline path
+.venv/Scripts/python -m slmforge doctor   # fix what it complains about first
 .venv/Scripts/python -m slmforge init-db
-.venv/Scripts/python -m slmforge serve     # terminal 1
-.venv/Scripts/python -m slmforge worker    # terminal 2
-.venv/Scripts/python scripts/demo_smoke.py # terminal 3 — the end-to-end proof
+docker build -f docker/sandbox.Dockerfile -t slmforge/sandbox:latest .
 ```
 
-Status table: [README.md](README.md) · Agenda and exit criteria:
-[docs/ROADMAP.md](docs/ROADMAP.md) · Architecture and limitations:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`--system-site-packages` is intentional: the reference machine already carries
+torch/transformers/peft, and reinstalling them costs gigabytes.
+
+### Start it (3 terminals)
+
+```bash
+.venv/Scripts/python -m slmforge serve     # terminal 1 — API + built UI at http://127.0.0.1:8000
+.venv/Scripts/python -m slmforge worker    # terminal 2 — required for any dataset build
+.venv/Scripts/python scripts/demo_smoke.py # terminal 3 — optional end-to-end proof (needs network)
+```
+
+For UI development instead of the served build:
+
+```bash
+cd web && npm install && npm run dev   # http://localhost:5173 (use localhost, not 127.0.0.1)
+```
+
+### Click path (the demo, in the UI)
+
+1. Paste the ticket-classification sentence (or "Use the ticket example") and
+   **Create build**.
+2. In **Pipeline**, **Run** `analyze` — the **Specification** panel shows labels,
+   readiness and which path ran (`generated_by`: planner model vs heuristic).
+3. In **Dataset**, **Plan dataset** — candidates appear with fit score, rationale,
+   row counts, label coverage, licence note and warnings. Nothing downloads here.
+4. Pick a candidate, set the target count, **Approve & build** — this queues a
+   `dataset_build` job. Watch it in **Jobs** (polls every 5s; cancel if needed).
+5. When the job succeeds, the **Dataset card** shows splits, label distribution,
+   synthetic share, sources and issues; **Artifacts** lists the JSONL files under
+   `artifacts/<project-id>/dataset/`; **Build log** shows the event trail.
+
+### Same path as API calls (scriptable)
+
+```bash
+API=http://127.0.0.1:8000
+PROJECT=$(curl -s -X POST $API/api/projects \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Build a small model that classifies customer support tickets into Billing, Technical, Account Access or General and returns only a valid JSON object."}' \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+curl -s -X POST $API/api/projects/$PROJECT/stages/analyze/run -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST $API/api/projects/$PROJECT/stages/curate_data/run -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST $API/api/projects/$PROJECT/jobs -H 'Content-Type: application/json' \
+  -d '{"kind":"dataset_build","params":{"build":true,"selected":["hf:Tobi-Bueck/customer-support-tickets"],"target_examples":4000}}'
+curl -s $API/api/projects/$PROJECT/jobs | python -m json.tool
+```
+
+A synchronous build (`stages/curate_data/run` with `{"build": true}`) is refused
+with 409 by design — builds download data, so they only run on a worker.
+Unbuilt stages answer 501 with the milestone that owns them.
+
+---
+
+## 4. Where things live
+
+- `src/slmforge/pipeline/` — the eight stages (`analyzer.py`, `datasets.py` done;
+  the rest are honest stubs). Stages never touch the DB; the orchestrator does.
+- `src/slmforge/jobs/` — durable queue + worker + handlers (long work lives here,
+  never in the API process).
+- `src/slmforge/sandbox/` — `subprocess_backend.py` (dev fast path) and
+  `docker_backend.py` (real boundary).
+- `src/slmforge/integrations/` — `hf_cli.py` is the primary Hub interface;
+  every network call retries via `net.retry_call`.
+- `src/slmforge/api/` — thin routers (projects, stages, jobs, deployments, health).
+- `web/src/` — dashboard: prompt form, capability bar, pipeline, spec, dataset
+  review, jobs, build log, artifacts. Served from `web/dist` by FastAPI.
+- `scripts/demo_smoke.py` — the live end-to-end check the unit suite cannot do.
+
+---
+
+## 5. Constraints you will hit (so they do not surprise you)
+
+- torch here is CPU-only (`cuda.is_available() == False`) despite the RTX 4060 —
+  fine for the data demo, too slow for real training until a CUDA wheel lands.
+- The HF account has no credits: GPU training and hosted endpoints are
+  implemented-but-gated paths, not defaults. The demo trains/serves locally.
+- The free planner model is intermittently overloaded (retried with backoff, then
+  falls back to the heuristic and says so).
+- The reference network resets TLS to `huggingface.co` under load — everything
+  retries; profile remotely once, then materialise locally once.
+- Vite 8 may bind IPv6 only: use `localhost:5173`, not `127.0.0.1:5173`.
+
+Next up per [docs/ROADMAP.md](docs/ROADMAP.md): Stage 3 (model discovery and
+ranking), then the baseline harness. Status table: [README.md](README.md).

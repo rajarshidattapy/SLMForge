@@ -89,6 +89,21 @@ export type StageRunResult = {
   output: Record<string, unknown>;
 };
 
+export type Job = {
+  id: string;
+  kind: string;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  claimed_by: string | null;
+  exit_code: number | null;
+  logs_path: string | null;
+  error: string | null;
+  params: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+};
+
 /** Error carrying the HTTP status so callers can explain 409/428/501 precisely. */
 export class ApiError extends Error {
   constructor(
@@ -145,9 +160,22 @@ export const api = {
       body: JSON.stringify({ spec }),
     }),
 
-  runStage: (id: string, stage: string, approved = false) =>
+  runStage: (id: string, stage: string, approved = false, params: Record<string, unknown> = {}) =>
     request<StageRunResult>(`/projects/${id}/stages/${stage}/run`, {
       method: "POST",
-      body: JSON.stringify({ approved }),
+      body: JSON.stringify({ approved, params }),
+    }),
+
+  listJobs: (id: string) => request<Job[]>(`/projects/${id}/jobs`),
+
+  enqueueJob: (id: string, kind: string, params: Record<string, unknown> = {}, approved = true) =>
+    request<Job>(`/projects/${id}/jobs`, {
+      method: "POST",
+      body: JSON.stringify({ kind, params, approved }),
+    }),
+
+  cancelJob: (projectId: string, jobId: string) =>
+    request<Job>(`/projects/${projectId}/jobs/${jobId}/cancel`, {
+      method: "POST",
     }),
 };

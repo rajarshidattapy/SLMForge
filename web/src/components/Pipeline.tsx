@@ -24,12 +24,14 @@ export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
       });
       onChanged();
     } catch (error) {
-      // 501 = not built yet, 409 = long-running, 428 = approval required.
+      // 501 = not built yet, 409 = long-running (use the Dataset/Jobs panels), 428 = approval.
       const detail =
         error instanceof ApiError
           ? error.status === 501
             ? `Not implemented yet — ${error.message}`
-            : error.message
+            : error.status === 409 && stage.name === "curate_data"
+              ? "Building downloads data — approve it in the Dataset panel below (it queues a worker job)."
+              : error.message
           : String(error);
       setMessage({ tone: "error", text: detail });
     } finally {
