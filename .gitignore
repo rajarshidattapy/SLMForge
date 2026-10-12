@@ -10,6 +10,8 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.freebuff/
+package-lock.json
 
 # --- Node / web ---
 node_modules/

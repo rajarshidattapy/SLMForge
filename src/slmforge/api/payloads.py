@@ -119,6 +119,25 @@ class ProjectDetail(ProjectOut):
     artifacts: list[ArtifactOut] = Field(default_factory=list)
 
 
+class UserOut(BaseModel):
+    """The public Hugging Face profile kept in the session cookie."""
+
+    sub: str
+    username: str
+    name: str
+    avatar_url: str | None = None
+    email: str | None = None
+
+
+class AuthStatusOut(BaseModel):
+    """Whether sign-in is configured and who (if anyone) is signed in."""
+
+    enabled: bool
+    provider: str = "huggingface"
+    authenticated: bool = False
+    user: UserOut | None = None
+
+
 class CapabilityOut(BaseModel):
     """Environment diagnostics shown on the dashboard so users know what will work."""
 
