@@ -1,7 +1,7 @@
+
 import { useMemo, useState } from "react";
+
 import type { PipelineStage, ProjectDetail as ProjectDetailType } from "../api";
-import { DatasetPanel } from "./DatasetPanel";
-import { JobsPanel } from "./JobsPanel";
 import { FilePlanIcon, TrashIcon } from "../icons";
 import {
   approachOf,
@@ -11,6 +11,8 @@ import {
   statusMeta,
   taskTypeOf,
 } from "../projectMeta";
+import { DatasetPanel } from "./DatasetPanel";
+import { JobsPanel } from "./JobsPanel";
 import { Pipeline } from "./Pipeline";
 
 type Props = {
@@ -24,7 +26,13 @@ type Props = {
 type Tab = "spec" | "logs" | "artifacts";
 
 /** The build record: what was asked for, what has run, and what was produced. */
-export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete }: Props) {
+export function ProjectDetail({
+  project,
+  stages,
+  nextStage,
+  onChanged,
+  onDelete,
+}: Props) {
   const [jobsTick, setJobsTick] = useState(0);
   const [tab, setTab] = useState<Tab>("spec");
   const status = statusMeta(project.status);
@@ -33,12 +41,22 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
     () => (project.spec ? JSON.stringify(project.spec, null, 2) : null),
     [project.spec],
   );
+
   const spec = (project.spec ?? {}) as Record<string, unknown>;
-  const readiness = typeof spec["readiness"] === "string" ? spec["readiness"] : null;
-  const generatedBy = typeof spec["generated_by"] === "string" ? spec["generated_by"] : null;
+
+  const readiness =
+    typeof spec["readiness"] === "string" ? spec["readiness"] : null;
+  const generatedBy =
+    typeof spec["generated_by"] === "string" ? spec["generated_by"] : null;
+
   const labels = Array.isArray(spec["allowed_labels"])
     ? (spec["allowed_labels"] as unknown[]).map(String).join(" · ")
     : null;
+
+  function refreshed() {
+    onChanged();
+    setJobsTick((n) => n + 1);
+  }
 
   const facts = [
     { label: "Task", value: taskTypeOf(project) },
@@ -46,12 +64,10 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
     { label: "Base model", value: baseModelOf(project) },
     { label: "Metric", value: primaryMetricOf(project) },
     { label: "Data", value: datasetsOf(project).join(", ") || null },
-  ].filter((fact): fact is { label: string; value: string } => fact.value !== null);
-
-  function refreshed() {
-    onChanged();
-    setJobsTick((n) => n + 1);
-  }
+  ].filter(
+    (fact): fact is { label: string; value: string } =>
+      fact.value !== null,
+  );
 
   return (
     <div className="detail">
@@ -59,15 +75,23 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
         <span className="detail__glyph" aria-hidden="true">
           <FilePlanIcon size={22} />
         </span>
+
         <div className="detail__heading">
           <h2 className="detail__title">{project.name}</h2>
           <p className="detail__meta">
-            <span className={`pill pill--${status.tone}`}>{status.label}</span>
+            <span className={`pill pill--${status.tone}`}>
+              {status.label}
+            </span>
             <span className="detail__id">{project.id.slice(0, 8)}</span>
             <span>{new Date(project.created_at).toLocaleString()}</span>
           </p>
         </div>
-        <button className="icon-btn icon-btn--ghost" onClick={onDelete} aria-label="Delete build">
+
+        <button
+          className="icon-btn icon-btn--ghost"
+          onClick={onDelete}
+          aria-label="Delete build"
+        >
           <TrashIcon size={18} />
         </button>
       </header>
@@ -108,31 +132,41 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
             label={`Artifacts${project.artifacts.length ? ` (${project.artifacts.length})` : ""}`}
           />
         </div>
+
+        {tab === "spec" && (
           <>
-            <p className="muted" style={{ marginBottom: 8 }}>
-              {labels ?? "No labels yet"}
-              {readiness ? ` · ${readiness}` : ""}
-              {generatedBy ? ` · via ${generatedBy}` : ""}
-            </p>
-            <pre className="code">{specJson}</pre>
+            {specJson ? (
+              <>
+                <p className="muted" style={{ marginBottom: 8 }}>
+                  {labels ?? "No labels yet"}
+                  {readiness ? ` · ${readiness}` : ""}
+                  {generatedBy ? ` · via ${generatedBy}` : ""}
+                </p>
+                <pre className="code">{specJson}</pre>
+              </>
+            ) : (
+              <p className="muted">
+                No specification yet. The analyze stage generates one (and it stays editable before any compute is spent).
+              </p>
+            )}
+
+            <DatasetPanel
+              projectId={project.id}
+              datasetPlan={
+                (project.dataset_plan ?? null) as
+                  | Record<string, unknown>
+                  | null
+              }
+              onChanged={refreshed}
+            />
+
+            <JobsPanel
+              projectId={project.id}
+              refreshToken={jobsTick}
+              onChanged={onChanged}
+            />
           </>
-        ) : (
-          <p className="muted">
-            No specification yet. Run the analyze stage above (and it stays editable before any
-            compute is spent).
-          </p>
         )}
-
-        {tab === "spec" &&
-          (specJson ? (
-      <DatasetPanel
-        projectId={project.id}
-        datasetPlan={(project.dataset_plan ?? null) as Record<string, unknown> | null}
-        onChanged={refreshed}
-      />
-
-      <JobsPanel projectId={project.id} refreshToken={jobsTick} onChanged={onChanged} />
-
 
         {tab === "logs" &&
           (project.events.length === 0 ? (
@@ -140,9 +174,14 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
           ) : (
             <ul className="events">
               {project.events.map((event) => (
-                <li key={event.id} className={`events__item events__item--${event.level}`}>
+                <li
+                  key={event.id}
+                  className={`events__item events__item--${event.level}`}
+                >
                   <time>{new Date(event.at).toLocaleTimeString()}</time>
-                  {event.stage && <span className="events__stage">{event.stage}</span>}
+                  {event.stage && (
+                    <span className="events__stage">{event.stage}</span>
+                  )}
                   <span className="events__message">{event.message}</span>
                 </li>
               ))}
@@ -156,7 +195,8 @@ export function ProjectDetail({ project, stages, nextStage, onChanged, onDelete 
             <ul className="artifacts">
               {project.artifacts.map((artifact) => (
                 <li key={artifact.id}>
-                  <span className="badge">{artifact.kind}</span> {artifact.name}
+                  <span className="badge">{artifact.kind}</span>{" "}
+                  {artifact.name}
                   <code className="muted"> {artifact.path}</code>
                 </li>
               ))}
