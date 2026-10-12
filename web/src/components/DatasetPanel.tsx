@@ -49,6 +49,7 @@ export function DatasetPanel({ projectId, datasetPlan, onChanged }: Props) {
   const sufficiency = typeof datasetPlan?.["sufficiency"] === "string" ? datasetPlan["sufficiency"] : null;
   const [selected, setSelected] = useState<string>("");
   const [target, setTarget] = useState<number>(4000);
+  const [offline, setOffline] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
@@ -58,7 +59,12 @@ export function DatasetPanel({ projectId, datasetPlan, onChanged }: Props) {
     setBusy(true);
     setMessage(null);
     try {
-      const result = await api.runStage(projectId, "curate_data");
+      const result = await api.runStage(
+        projectId,
+        "curate_data",
+        false,
+        offline ? { offline: true } : {},
+      );
       setMessage({ tone: result.status === "succeeded" ? "ok" : "error", text: result.summary });
       onChanged();
     } catch (error) {
@@ -98,6 +104,18 @@ export function DatasetPanel({ projectId, datasetPlan, onChanged }: Props) {
         <button className="btn btn--small" onClick={plan} disabled={busy}>
           {busy ? "Working…" : candidates.length === 0 ? "Plan dataset" : "Re-plan dataset"}
         </button>
+        <label
+          className="muted"
+          title="Skip the Hub search and profile only the hand-verified catalog. Useful when huggingface.co is unreachable — the demo dataset is in the catalog, so planning still works."
+        >
+          <input
+            type="checkbox"
+            checked={offline}
+            onChange={(e) => setOffline(e.target.checked)}
+            disabled={busy}
+          />{" "}
+          Offline (catalog only)
+        </label>
         <span className="muted">
           Planning profiles candidates remotely and downloads nothing. Building downloads, so it
           runs on a worker.

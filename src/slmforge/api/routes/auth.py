@@ -51,7 +51,9 @@ logger = get_logger("api.auth")
 def _error_redirect(target: str, code: str) -> RedirectResponse:
     """Send the browser back to the app with a machine-readable failure code."""
     separator = "&" if "?" in target else "?"
-    return RedirectResponse(f"{target}{separator}{urlencode({'auth_error': code})}", status_code=302)
+    return RedirectResponse(
+        f"{target}{separator}{urlencode({'auth_error': code})}", status_code=302
+    )
 
 
 @router.get("/me", response_model=AuthStatusOut)

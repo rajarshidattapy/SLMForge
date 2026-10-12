@@ -52,7 +52,9 @@ def _b64decode(text: str) -> bytes:
 def sign_payload(payload: dict[str, Any]) -> str:
     """Serialize `payload` and append an HMAC-SHA256 signature over it."""
     body = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    digest = hmac.new(settings.session_signing_key.encode("utf-8"), body.encode("ascii"), hashlib.sha256)
+    digest = hmac.new(
+        settings.session_signing_key.encode("utf-8"), body.encode("ascii"), hashlib.sha256
+    )
     return f"{body}.{_b64encode(digest.digest())}"
 
 

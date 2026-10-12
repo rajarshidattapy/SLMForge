@@ -50,7 +50,9 @@ def _isolated_cookies(client: TestClient) -> None:
     client.cookies.clear()
 
 
-def test_sign_in_is_off_until_configured(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sign_in_is_off_until_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A deployment with no OAuth app must say so rather than start a broken flow."""
     monkeypatch.setattr(settings, "hf_client_id", "")
     monkeypatch.setattr(settings, "hf_client_secret", "")
@@ -92,7 +94,9 @@ def test_callback_completes_sign_in_without_storing_the_token(
     client: TestClient, hf_oauth: None
 ) -> None:
     respx.post(TOKEN_URL).mock(
-        return_value=httpx.Response(200, json={"access_token": "hf_oauth_secret", "token_type": "bearer"})
+        return_value=httpx.Response(
+            200, json={"access_token": "hf_oauth_secret", "token_type": "bearer"}
+        )
     )
     respx.get(USERINFO_URL).mock(return_value=httpx.Response(200, json=PROFILE))
 

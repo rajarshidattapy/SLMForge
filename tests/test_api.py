@@ -100,7 +100,11 @@ def test_pipeline_overview_reports_stage_status(client: TestClient) -> None:
         "deploy",
     }
     # The flag must be honest about what is actually built.
-    assert [s["name"] for s in stages if s["implemented"]] == ["analyze", "curate_data"]
+    assert [s["name"] for s in stages if s["implemented"]] == [
+        "analyze",
+        "curate_data",
+        "select_model",
+    ]
     assert next(s for s in stages if s["name"] == "train")["requires_approval"] is True
 
 
@@ -129,9 +133,11 @@ def test_spec_can_reviewed_and_edited(client: TestClient, project: dict) -> None
 
 def test_unimplemented_stage_returns_501(client: TestClient, project: dict) -> None:
     """An unbuilt stage must say so rather than pretend to succeed."""
-    response = client.post(f"/api/projects/{project['id']}/stages/select_model/run", json={})
+    response = client.post(
+        f"/api/projects/{project['id']}/stages/deploy/run", json={"approved": True}
+    )
     assert response.status_code == 501
-    assert "select_model" in response.json()["detail"]
+    assert "deploy" in response.json()["detail"]
 
 
 def test_dataset_planning_runs_but_does_not_advance_the_project(
@@ -244,27 +250,21 @@ def test_long_running_stages_are_rejected_synchronously(client: TestClient, proj
         assert response.status_code == 409, f"{stage} should not run synchronously"
 
 
-def test_approval_gate_blocks_gated_stage(client: TestClient, project: dict, monkeypatch) -> None:
-    """A gated stage must not execute just because someone clicked "run".
-
-    `select_model` is still a stub, so it is marked implemented for this test: the
-    point under test is the approval gate, not the stage body. Without that, the
-    endpoint would (correctly) answer 501 before it ever asks about approval.
-    """
-    from slmforge.models import StageName
-    from slmforge.pipeline import get_stage
-
-    monkeypatch.setattr(get_stage(StageName.select_model), "implemented", True)
-
+def test_approval_gate_blocks_gated_stage(client: TestClient, project: dict) -> None:
+    """A gated stage must not execute just because someone clicked "run"."""
     blocked = client.post(f"/api/projects/{project['id']}/stages/select_model/run", json={})
     assert blocked.status_code == 428
     assert "approval" in blocked.json()["detail"].lower()
 
-    # With approval the gate opens, and the unimplemented body reports itself.
+    # With approval the gate opens and the stage runs — but a fresh project has
+    # no spec yet, so it fails honestly instead of inventing a shortlist.
     approved = client.post(
         f"/api/projects/{project['id']}/stages/select_model/run", json={"approved": True}
     )
-    assert approved.status_code == 501
+    assert approved.status_code == 200
+    body = approved.json()
+    assert body["status"] == "failed"
+    assert "analyze" in (body["error"] or "")
 
 
 def test_next_step_points_at_first_incomplete_stage(client: TestClient, project: dict) -> None:

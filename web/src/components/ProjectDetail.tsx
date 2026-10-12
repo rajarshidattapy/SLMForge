@@ -151,6 +151,9 @@ export function ProjectDetail({
             )}
 
             <DatasetPanel
+              // Reset selection/target per project: the panel keeps local state
+              // that is meaningless for a different project's candidates.
+              key={project.id}
               projectId={project.id}
               datasetPlan={
                 (project.dataset_plan ?? null) as

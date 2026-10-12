@@ -17,7 +17,7 @@ every stage.** We never build a beautiful UI for a pipeline that cannot run.
 | 0 | Foundation | ✅ Complete |
 | 1 | Prompt → `MLSpec` (analyzer) | ✅ Complete |
 | 2 | Dataset curation | ✅ Complete |
-| 3 | Model discovery & ranking | ⬜ **Next up** |
+| 3 | Model discovery & ranking | ✅ Complete |
 | 4 | Docker sandbox + baseline | 🟡 Docker sandbox **done**; baseline harness pending |
 | 5 | Training planner | ⬜ Not started |
 | 6 | Fine-tuning execution | ⬜ Not started |
@@ -231,11 +231,35 @@ source plus a configurable cache location.
 
 ---
 
-## Stage 3 — Model discovery & ranking
+## Stage 3 — Model discovery & ranking ✅ Complete
 
 **Goal:** a defensible shortlist, and a chosen base model the user approves.
 
-Work:
+Delivered:
+
+- `ModelSelectionStage` with two calls, mirroring the dataset plan/approve
+  split: ranking (read-only, returns `needs_approval`, advances nothing) and a
+  decision (`params={"selected": id}` approves and advances to
+  `model_selected`; `{"rejected": true}` records the refusal and stays put).
+- Three sources: a hand-verified 7-model catalog (works offline), local marks
+  from the Ollama inventory and the HF cache snapshot dirs, and Hub search
+  leads offered as unverified, unapproved leads — a dead network degrades to
+  catalog-only rather than failing.
+- Transparent rubric (task fit .35 / VRAM fit .35 / licence .20 / locality .10)
+  with per-candidate `rank_rationale`; ties break toward the cheaper fit, and
+  the baseline stage will resolve capability ties with measurements.
+- Documented QLoRA heuristic (`1.5 + 1.55 GB` per billion params); oversized
+  picks stay blocked (physics), flagged licences are allowed (the approval
+  *is* the review).
+- 15 contract tests, all services mocked; the approval-gate API tests now run
+  against the real stage instead of a monkeypatched stub.
+
+Exit criteria — met, verified live: the ticket spec at 8 GB VRAM ranks 7
+candidates that all fit QLoRA, each with a licence verdict and rationale;
+`SmolLM2-360M-Instruct` tops on cost among equals; approving advances the
+project to `model_selected` with alternatives persisted; rejecting is recorded.
+
+Work (as built):
 
 1. Enumerate Ollama models (`/api/tags`) and the local HF cache.
 2. Search the HF Hub for small instruction-tuned candidates, filtered by a
@@ -429,6 +453,11 @@ rather than hiding latency.
 ## Stage 9 — Dashboard, retention & hardening
 
 **Goal:** make the build record trustworthy and the deployment safe to leave running.
+
+Pulled forward already (the API was complete enough to drive): the dataset
+review panel (plan → scored candidates → approve-and-build, with an offline
+catalog-only toggle), the worker-jobs panel (polling, cancel), spec/build-log/
+artifact tabs, and the HF sign-in chip. Still ahead: everything under "Work".
 
 Work:
 

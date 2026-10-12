@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, api, type Job } from "../api";
 
 type Props = {
@@ -13,6 +13,12 @@ const ACTIVE = new Set(["pending", "running"]);
 export function JobsPanel({ projectId, refreshToken, onChanged }: Props) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // `onChanged` arrives as a fresh closure every parent render; calling it
+  // through a ref keeps the polling effect from restarting (and refetching)
+  // on each render, which otherwise turns the 5 s poll into a hot loop.
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const wasActiveRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,8 +31,14 @@ export function JobsPanel({ projectId, refreshToken, onChanged }: Props) {
         setJobs(rows);
         setError(null);
         const active = rows.some((j) => ACTIVE.has(j.status));
+        if (active || wasActiveRef.current) {
+          // Refresh on every active poll, plus once more when the last active
+          // job settles — that final refresh is what reveals the dataset card
+          // without the user having to reload the project by hand.
+          onChangedRef.current();
+        }
+        wasActiveRef.current = active;
         if (active) {
-          onChanged();
           timer = setTimeout(load, 5000);
         }
       } catch (err) {
@@ -39,7 +51,7 @@ export function JobsPanel({ projectId, refreshToken, onChanged }: Props) {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [projectId, refreshToken, onChanged]);
+  }, [projectId, refreshToken]);
 
   async function cancel(jobId: string) {
     try {

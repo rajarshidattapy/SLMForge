@@ -45,8 +45,9 @@ next one starts.
 | Foundation (config, DB, pipeline contracts, job queue + worker, sandbox interface, API, CLI, dashboard shell) | Done |
 | Stage 1 — Analyze: prompt to editable `MLSpec` (planner LLM, plus an offline heuristic fallback labelled in `generated_by`) | Done |
 | Stage 2 — Curate data: reviewable dataset plan, approve, then a worker build producing `train/validation/test.jsonl` + `DatasetCard` | Done |
+| Stage 3 — Select model: ranked shortlist with per-candidate rationale (VRAM fit, licence, locality), approval/rejection gate, alternatives persisted | Done |
 | Sandbox: real Docker boundary (network denial, read-only root, non-root user, memory/time limits); subprocess kept as dev fast path | Done |
-| Stages 3-8 (model ranking, baseline, training plan, fine-tune, evaluation, deployment) | Not built — the API answers `501` honestly and the UI marks them "not built yet" |
+| Stages 4-8 (baseline, training plan, fine-tune, evaluation, deployment) | Not built — the API answers `501` honestly and the UI marks them "not built yet" |
 
 Last verified live run (real API + worker + Hub + planner LLM): the ticket prompt
 produced a 4-label spec, a 5-candidate dataset plan (top fit 0.825), and an
@@ -58,8 +59,8 @@ dataset cannot support an "Account Access" class (`marginal`, error-severity
 issue), is 100% synthetic, and is licensed `cc-by-nc-4.0` (fine for the demo,
 disqualifying for commercial deployment).
 
-Quality gates: 218 tests, `ruff check`, `ruff format --check` and `mypy` clean
-(51 source files); 11 Docker isolation tests pass against a live daemon.
+Quality gates: 243 tests, `ruff check`, `ruff format --check` and `mypy` clean
+(54 source files); 11 Docker isolation tests pass against a live daemon.
 
 ---
 
@@ -113,11 +114,18 @@ cd web && npm install && npm run dev   # http://localhost:5173 (use localhost, n
    readiness and which path ran (`generated_by`: planner model vs heuristic).
 3. In **Dataset**, **Plan dataset** — candidates appear with fit score, rationale,
    row counts, label coverage, licence note and warnings. Nothing downloads here.
+   If `huggingface.co` is unreachable, tick **Offline (catalog only)** to skip
+   the Hub search — the demo dataset is hand-verified in the catalog, so planning
+   still works.
 4. Pick a candidate, set the target count, **Approve & build** — this queues a
    `dataset_build` job. Watch it in **Jobs** (polls every 5s; cancel if needed).
 5. When the job succeeds, the **Dataset card** shows splits, label distribution,
    synthetic share, sources and issues; **Artifacts** lists the JSONL files under
    `artifacts/<project-id>/dataset/`; **Build log** shows the event trail.
+6. In **Pipeline**, **Run** `Select base model` (approval is required even to
+   rank), review the shortlist — every candidate states its QLoRA fit, licence
+   verdict and reason — then approve one. The project advances to
+   `model_selected`; rejecting records your notes and stays put.
 
 ### Same path as API calls (scriptable)
 
@@ -137,6 +145,33 @@ curl -s $API/api/projects/$PROJECT/jobs | python -m json.tool
 A synchronous build (`stages/curate_data/run` with `{"build": true}`) is refused
 with 409 by design — builds download data, so they only run on a worker.
 Unbuilt stages answer 501 with the milestone that owns them.
+
+### Optional: Sign in with Hugging Face (local)
+
+Sign-in is off by default and nothing in the demo needs it — Hub data access
+goes through `hf auth login` on the CLI, not through this. It only identifies
+who is using the build. To enable it locally (no public URL needed — the
+redirect happens inside your own browser):
+
+1. Create an app at `huggingface.co/settings/applications/new`:
+   - Homepage URL: `http://localhost:8000` (display-only link on the consent screen)
+   - Redirect URI: `http://localhost:8000/api/auth/huggingface/callback` (must match exactly)
+2. In `.env`:
+   ```
+   HF_CLIENT_ID=<from the HF app page>
+   HF_CLIENT_SECRET=<from the HF app page>
+   SLMFORGE_PUBLIC_BASE_URL=http://localhost:8000
+   ```
+3. Restart `serve`, then use the **Sign in with Hugging Face** button in the
+   sidebar (or visit `http://localhost:8000/api/auth/huggingface/login`
+   directly). Verify at `http://localhost:8000/api/auth/me`.
+
+Rules that bite: use `localhost`, not `127.0.0.1`, in the browser — they are
+different cookie hosts, so signing in on one is invisible on the other. The
+redirect URI must equal `SLMFORGE_PUBLIC_BASE_URL` +
+`/api/auth/huggingface/callback` character-for-character or HF rejects the
+callback. On a deployed backend, `SLMFORGE_PUBLIC_BASE_URL` must instead be the
+public URL.
 
 ---
 
@@ -168,6 +203,8 @@ Unbuilt stages answer 501 with the milestone that owns them.
 - The reference network resets TLS to `huggingface.co` under load — everything
   retries; profile remotely once, then materialise locally once.
 - Vite 8 may bind IPv6 only: use `localhost:5173`, not `127.0.0.1:5173`.
+- `localhost` and `127.0.0.1` are different cookie hosts: pick `localhost`
+  everywhere (including HF sign-in) or sessions disappear across hosts.
 
 Next up per [docs/ROADMAP.md](docs/ROADMAP.md): Stage 3 (model discovery and
 ranking), then the baseline harness. Status table: [README.md](README.md).

@@ -46,7 +46,7 @@ As of the last commit on `main`:
 
 | Check | Result |
 |---|---|
-| `pytest` | **218 passing**, 0 failing |
+| `pytest` | **243 passing**, 0 failing |
 | `ruff check src tests` | clean |
 | `ruff format` | clean |
 | `mypy src` | clean (51 source files) |
@@ -60,7 +60,7 @@ As of the last commit on `main`:
 | 0 | Foundation | ✅ Complete | Config, DB, contracts, orchestrator, queue/worker, sandbox interface, API, CLI, web shell, docs |
 | 1 | Analyze → `MLSpec` | ✅ Complete | Planner-LLM path **and** deterministic offline fallback; high-stakes + support gates; clarifying questions |
 | 2 | Curate data | ✅ Complete | Plan → approve → build: label mapping, dedupe, seeded splits, leakage check, `DatasetCard`, uploaded files |
-| 3 | Select model | ⬜ **Next up** | |
+| 3 | Select model | ✅ Complete | Ranked shortlist with rationale, approval gate, alternatives persisted |
 | 4 | Sandbox + baseline | 🟡 **Docker sandbox done** | Image built, isolation proven; baseline harness pending |
 | 5 | Training planner | ⬜ Not started | |
 | 6 | Fine-tune | ⬜ Not started | |
@@ -84,14 +84,24 @@ Legend: ✅ done and verified · 🟡 partially done · ⬜ not started.
   `DatasetCard`: label mapping audit trail, duplicate and PII counts, leakage removed,
   file hashes, per-source provenance and a synthetic fraction.
 - Build a dataset from **your own JSONL/CSV** with a column mapper (`upload:<path>`).
+- Get a ranked model shortlist where every candidate carries its score **and**
+  the reason: QLoRA fit against your VRAM budget, licence verdict, and whether
+  it is already on this machine. Approve one (or reject with notes) — the
+  choice and the considered alternatives persist as `ModelSelection`.
 - Queue long work (`POST /api/projects/{id}/jobs`) and let a worker run it.
+- Drive the whole demo from the dashboard: plan the dataset, review scored
+  candidates, approve a build, and watch the worker job (with cancel) — no curl
+  required. An **Offline (catalog only)** toggle skips the Hub search when
+  `huggingface.co` is unreachable.
+- Sign in with Hugging Face (optional; needs `HF_CLIENT_ID`/`HF_CLIENT_SECRET`
+  plus a registered redirect URI — loopback works for local dev).
 - Inspect `/api/capabilities` to see exactly what the machine can and cannot do.
 - Run untrusted code in a **real Docker sandbox** with network denial, a read-only
   root, a non-root user and CPU/memory/time limits.
 
 ### What does *not* work yet
 
-Stages 3–8 (model selection, baseline, training plan, fine-tune, evaluation,
+Stages 4–8 (baseline, training plan, fine-tune, evaluation,
 deployment) return an honest `501 Not Implemented` with the milestone that will build
 them — by design, so nothing looks finished that isn't. `docs/ROADMAP.md` is the
 source of truth for what is next. Stage 2 also carries a short list of deferred work
@@ -230,11 +240,27 @@ curl -s $API/api/projects/$PROJECT/artifacts | python -m json.tool
 curl -s $API/api/projects/$PROJECT/pipeline | python -m json.tool
 curl -s $API/api/projects/$PROJECT/spec     | python -m json.tool
 curl -s $API/api/projects/$PROJECT/events   | python -m json.tool
+
+# 6. Rank base models (needs explicit approval even to rank — it is the gate)
+curl -s -X POST $API/api/projects/$PROJECT/stages/select_model/run \
+  -H 'Content-Type: application/json' -d '{"approved":true}' | python -m json.tool
+
+# 7. Approve the recommended candidate (use its id from the shortlist)
+curl -s -X POST $API/api/projects/$PROJECT/stages/select_model/run \
+  -H 'Content-Type: application/json' \
+  -d '{"approved":true,"params":{"selected":"hf:HuggingFaceTB/SmolLM2-360M-Instruct"}}'
 ```
 
 Built files land in `artifacts/<project-id>/dataset/` (`train.jsonl`,
 `validation.jsonl`, `test.jsonl`, `dataset_card.json`), and each is registered as an
 `Artifact` row with its size and SHA-256.
+
+**Prefer clicking?** The dashboard covers steps 1–5: create the build from the
+home screen, **Run** `analyze` in Pipeline, **Plan dataset** in the Dataset
+panel (tick **Offline (catalog only)** if the Hub is unreachable), pick a
+candidate and **Approve & build**, then watch the job in **Jobs** — the Dataset
+card, build log and artifacts appear on the project when it succeeds. A worker
+must still be running; the UI polls it, it does not replace it.
 
 Edit the spec and re-run until it matches intent, then walk the pipeline with
 `POST /api/projects/{id}/advance` (or `stages/{name}/run`) as later stages land.
@@ -347,7 +373,7 @@ src/slmforge/
 web/                   Vite + React + TypeScript dashboard
 docker/sandbox.Dockerfile   the pinned, unprivileged sandbox image
 scripts/demo_smoke.py  live end-to-end check against the real API, worker and Hub
-tests/                 218 tests; external services are always mocked
+tests/                 243 tests; external services are always mocked
 docs/                  ARCHITECTURE.md, ROADMAP.md
 ```
 
