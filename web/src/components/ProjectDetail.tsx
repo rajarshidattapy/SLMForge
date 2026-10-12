@@ -13,6 +13,7 @@ import {
 } from "../projectMeta";
 import { DatasetPanel } from "./DatasetPanel";
 import { JobsPanel } from "./JobsPanel";
+import { ModelPanel } from "./ModelPanel";
 import { Pipeline } from "./Pipeline";
 
 type Props = {
@@ -157,6 +158,19 @@ export function ProjectDetail({
               projectId={project.id}
               datasetPlan={
                 (project.dataset_plan ?? null) as
+                  | Record<string, unknown>
+                  | null
+              }
+              onChanged={refreshed}
+            />
+
+            <ModelPanel
+              // Same per-project reset as the dataset panel: the picked
+              // candidate belongs to one shortlist, not all of them.
+              key={`models-${project.id}`}
+              projectId={project.id}
+              selection={
+                (project.selected_model ?? null) as
                   | Record<string, unknown>
                   | null
               }

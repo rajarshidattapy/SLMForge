@@ -175,6 +175,22 @@ def latency_stats(latencies_ms: list[float]) -> tuple[float | None, float | None
 # --- model I/O (worker process, GPU when available) ---------------------------
 
 
+def bare_repo_id(candidate_id: str) -> str:
+    """Strip the source prefix (`hf:org/name` → `org/name`).
+
+    The prefix is routing metadata for the catalog, not part of the repo name —
+    the Hub, the cache layout and transformers all reject it, so it is removed
+    here, once, at the load boundary.
+    """
+    repo_id = candidate_id.removeprefix("hf:")
+    if repo_id.startswith("ollama:"):
+        raise RuntimeError(
+            f"Could not load model '{candidate_id}': Ollama-hosted weights are not "
+            "supported by the baseline harness yet; approve a Hub candidate."
+        )
+    return repo_id
+
+
 def cached_snapshot(repo_id: str, hf_home: Path | str) -> tuple[Path, str] | None:
     """Local snapshot dir + revision for a cached repo, else None."""
     base = Path(hf_home) / "hub" / ("models--" + repo_id.replace("/", "--"))
@@ -199,6 +215,10 @@ def load_model(repo_id: str, hf_home: Path | str) -> tuple[Any, Any, str, str | 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    # Candidate ids carry a source prefix (`hf:org/name`); the Hub, the cache
+    # layout and transformers all want the bare repo — strip it at the boundary
+    # so a prefix can never leak into a load path again.
+    repo_id = bare_repo_id(repo_id)
     cached = cached_snapshot(repo_id, hf_home)
     source = str(cached[0]) if cached else repo_id
     revision = cached[1] if cached else None
@@ -545,6 +565,7 @@ __all__ = [
     "INVALID",
     "SAMPLES_KEPT",
     "BaselineStage",
+    "bare_repo_id",
     "cached_snapshot",
     "compute_metrics",
     "generate_texts",

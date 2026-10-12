@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from slmforge.models import Project, ProjectStatus
 from slmforge.pipeline import baseline as bl
 from slmforge.pipeline.base import StageContext
@@ -159,6 +161,15 @@ def test_successful_baseline_reports_honest_numbers(tmp_path: Path, monkeypatch)
     assert result.output["config"]["seed"] == 42
     assert len(result.output["config"]["indices"]) == 9
     assert (tmp_path / "artifacts" / "baseline" / "eval_config.json").is_file()
+
+
+def test_candidate_id_prefix_never_reaches_the_loader() -> None:
+    """Regression: `hf:org/name` ids leaked into transformers, which rejects
+    the prefix. The boundary strips it; Ollama ids fail with guidance."""
+    assert bl.bare_repo_id("hf:Qwen/Qwen2.5-0.5B-Instruct") == "Qwen/Qwen2.5-0.5B-Instruct"
+    assert bl.bare_repo_id("Qwen/Qwen2.5-0.5B-Instruct") == "Qwen/Qwen2.5-0.5B-Instruct"
+    with pytest.raises(RuntimeError, match="Ollama"):
+        bl.bare_repo_id("ollama:qwen2.5:0.5b")
 
 
 def test_broken_model_is_a_reported_failure_not_a_score(tmp_path: Path, monkeypatch) -> None:

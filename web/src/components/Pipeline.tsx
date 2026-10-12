@@ -8,6 +8,13 @@ type Props = {
   onChanged: () => void;
 };
 
+/** Stages that run on a worker instead of in the request, and their job kinds. */
+const LONG_RUNNING: Record<string, string> = {
+  baseline: "baseline_eval",
+  train: "training",
+  evaluate: "evaluation",
+};
+
 /** The build's progress, with each stage's availability stated honestly. */
 export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -17,6 +24,18 @@ export function Pipeline({ projectId, stages, nextStage, onChanged }: Props) {
     setBusy(stage.name);
     setMessage(null);
     try {
+      // Long-running stages never execute in the request: queue them so the
+      // flow stays one click per stage — the Jobs panel picks up from here.
+      const kind = LONG_RUNNING[stage.name];
+      if (kind && stage.implemented) {
+        const job = await api.enqueueJob(projectId, kind, {}, approved);
+        setMessage({
+          tone: "ok",
+          text: `Queued ${kind} as job ${job.id.slice(0, 8)} — watch Jobs below.`,
+        });
+        onChanged();
+        return;
+      }
       const result = await api.runStage(projectId, stage.name, approved);
       setMessage({
         tone: result.status === "succeeded" ? "ok" : "error",

@@ -122,12 +122,14 @@ cd web && npm install && npm run dev   # http://localhost:5173 (use localhost, n
 5. When the job succeeds, the **Dataset card** shows splits, label distribution,
    synthetic share, sources and issues; **Artifacts** lists the JSONL files under
    `artifacts/<project-id>/dataset/`; **Build log** shows the event trail.
-6. In **Pipeline**, **Run** `Select base model` (approval is required even to
-   rank), review the shortlist — every candidate states its QLoRA fit, licence
-   verdict and reason — then approve one. The project advances to
-   `model_selected`; rejecting records your notes and stays put.
-7. Queue a `baseline_eval` job (Pipeline refuses it synchronously with 409 by
-   design) and watch the worker measure the approved model on GPU: accuracy /
+6. In **Base model**, **Rank models** (approval is required even to rank —
+   ranking itself is read-only), review the shortlist — every candidate states
+   its QLoRA fit, licence verdict and reason — pick one and **Approve** (or
+   **Reject** with notes). The project advances to `model_selected`; a rejection
+   records your notes and stays put.
+7. In **Pipeline**, **Run** `Establish baseline` — it queues a `baseline_eval`
+   job instead of running in the click (the API refuses sync execution with 409
+   by design) and the worker measures the approved model on GPU: accuracy /
    macro-F1, valid-output rate, latency percentiles and peak VRAM land in the
    **Artifacts** as `eval_<model>.json` plus the `eval_config.json`
    reproducibility bundle.
