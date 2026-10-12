@@ -383,13 +383,13 @@ audited, slim (Python 3.12 + duckdb + pandas + pyarrow + sklearn), and
 
 ## 8. Known limitations (honest list)
 
-1. **Stages 3–8 are documented stubs.** `run()` raises `NotImplementedError` with its
+1. **Stages 5–8 are documented stubs.** `run()` raises `NotImplementedError` with its
    milestone, and the API reports `implemented: false` so the UI disables them
-   honestly. Stages 1 (analyzer) and 2 (dataset curation) are implemented and were
-   verified live, not just unit-tested.
-2. `torch` on the reference machine is `2.10.0+cpu`, so `torch.cuda.is_available()`
-   is `False` despite the RTX 4060 (8 GB) being present and idle. Local fine-tuning
-   is impractical until a CUDA wheel is installed (~2.5 GB; F: has ~59 GB free).
+   honestly. Stages 1 (analyzer), 2 (dataset curation), 3 (model selection) and
+   4 (baseline) are implemented and were verified live, not just unit-tested.
+2. `.venv` carries torch `2.11.0+cu128`, so `torch.cuda.is_available()` is `True`
+   on the RTX 4060 (8 GB). Baseline and training measure real GPU numbers; the
+   Docker sandbox image stays CPU-only by design.
 3. **No HF credits** (`isPro: false`, `canPay: false`). `hf jobs` (managed GPU
    training) and `hf endpoints` (hosted endpoints) are gated behind a paid plan, so
    training and serving default to local paths.

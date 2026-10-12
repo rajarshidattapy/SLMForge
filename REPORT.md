@@ -47,7 +47,7 @@ next one starts.
 | Stage 2 — Curate data: reviewable dataset plan, approve, then a worker build producing `train/validation/test.jsonl` + `DatasetCard` | Done |
 | Stage 3 — Select model: ranked shortlist with per-candidate rationale (VRAM fit, licence, locality), approval/rejection gate, alternatives persisted | Done |
 | Sandbox: real Docker boundary (network denial, read-only root, non-root user, memory/time limits); subprocess kept as dev fast path | Done |
-| Stages 4-8 (baseline, training plan, fine-tune, evaluation, deployment) | Not built — the API answers `501` honestly and the UI marks them "not built yet" |
+| Stages 5-8 (training plan, fine-tune, evaluation, deployment) | Not built — the API answers `501` honestly and the UI marks them "not built yet" |
 
 Last verified live run (real API + worker + Hub + planner LLM): the ticket prompt
 produced a 4-label spec, a 5-candidate dataset plan (top fit 0.825), and an
@@ -59,7 +59,7 @@ dataset cannot support an "Account Access" class (`marginal`, error-severity
 issue), is 100% synthetic, and is licensed `cc-by-nc-4.0` (fine for the demo,
 disqualifying for commercial deployment).
 
-Quality gates: 243 tests, `ruff check`, `ruff format --check` and `mypy` clean
+Quality gates: 256 tests, `ruff check`, `ruff format --check` and `mypy` clean
 (54 source files); 11 Docker isolation tests pass against a live daemon.
 
 ---
@@ -126,6 +126,11 @@ cd web && npm install && npm run dev   # http://localhost:5173 (use localhost, n
    rank), review the shortlist — every candidate states its QLoRA fit, licence
    verdict and reason — then approve one. The project advances to
    `model_selected`; rejecting records your notes and stays put.
+7. Queue a `baseline_eval` job (Pipeline refuses it synchronously with 409 by
+   design) and watch the worker measure the approved model on GPU: accuracy /
+   macro-F1, valid-output rate, latency percentiles and peak VRAM land in the
+   **Artifacts** as `eval_<model>.json` plus the `eval_config.json`
+   reproducibility bundle.
 
 ### Same path as API calls (scriptable)
 
@@ -194,8 +199,9 @@ public URL.
 
 ## 5. Constraints you will hit (so they do not surprise you)
 
-- torch here is CPU-only (`cuda.is_available() == False`) despite the RTX 4060 —
-  fine for the data demo, too slow for real training until a CUDA wheel lands.
+- torch is now CUDA (`2.11.0+cu128`, RTX 4060 8 GB in `.venv`, shadowing the
+  global CPU build with a matching `torchvision`). Baseline and training measure
+  real GPU numbers; the Docker image stays CPU-only by design.
 - The HF account has no credits: GPU training and hosted endpoints are
   implemented-but-gated paths, not defaults. The demo trains/serves locally.
 - The free planner model is intermittently overloaded (retried with backoff, then
@@ -206,5 +212,5 @@ public URL.
 - `localhost` and `127.0.0.1` are different cookie hosts: pick `localhost`
   everywhere (including HF sign-in) or sessions disappear across hosts.
 
-Next up per [docs/ROADMAP.md](docs/ROADMAP.md): Stage 3 (model discovery and
-ranking), then the baseline harness. Status table: [README.md](README.md).
+Next up per [docs/ROADMAP.md](docs/ROADMAP.md): Stage 5 (training planner).
+Status table: [README.md](README.md).

@@ -133,8 +133,8 @@ metadata stay consistent.
   transformers, peft, trl, datasets, bitsandbytes, accelerate, unsloth, fastapi,
   sqlalchemy and more. Reuse them; installing the `ml` extra into an isolated
   venv would download several GB and the C: drive has limited free space.
-- **torch is a CPU-only build.** `torch.cuda.is_available()` is `False` even
-  though an RTX 4060 (8 GB) is present. GPU fine-tuning needs a CUDA torch build;
+- **torch is CUDA in `.venv`** (`2.11.0+cu128` + matching `torchvision`,
+  shadowing the global CPU builds) and the RTX 4060 (8 GB) is usable.
   `/api/capabilities` and `slmforge doctor` surface this rather than failing late.
 - **Ollama server is usually not running** (client 0.32.1 is installed). Code must
   degrade gracefully — `OllamaClient.list_models()` returns `[]`, never raises.
@@ -209,7 +209,7 @@ CLI, web scaffold and docs.
   materialises JSONL splits plus a `DatasetCard`. A build downloads, so it must go
   through a `dataset_build` job — the synchronous endpoint answers 409.
 
-Stages 3–8 (`select_model`, `baseline`, `plan_training`, `train`, `evaluate`, `deploy`)
+Stages 5–8 (`plan_training`, `train`, `evaluate`, `deploy`)
 still raise `NotImplementedError` and report `implemented: false`, which the API turns
 into an honest `501`. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the agenda, exit
 criteria and order.

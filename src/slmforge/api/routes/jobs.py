@@ -34,7 +34,7 @@ _KIND_TO_STAGE: dict[JobKind, StageName] = {
 }
 
 #: Job kinds with a handler today; enqueueing the rest would queue work nobody runs.
-_IMPLEMENTED_HANDLERS = {JobKind.dataset_build}
+_IMPLEMENTED_HANDLERS = {JobKind.dataset_build, JobKind.baseline_eval}
 
 
 def _to_out(job: Job) -> JobOut:

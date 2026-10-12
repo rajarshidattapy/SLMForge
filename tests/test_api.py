@@ -104,6 +104,7 @@ def test_pipeline_overview_reports_stage_status(client: TestClient) -> None:
         "analyze",
         "curate_data",
         "select_model",
+        "baseline",
     ]
     assert next(s for s in stages if s["name"] == "train")["requires_approval"] is True
 

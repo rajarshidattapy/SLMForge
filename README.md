@@ -46,7 +46,7 @@ As of the last commit on `main`:
 
 | Check | Result |
 |---|---|
-| `pytest` | **243 passing**, 0 failing |
+| `pytest` | **256 passing**, 0 failing |
 | `ruff check src tests` | clean |
 | `ruff format` | clean |
 | `mypy src` | clean (51 source files) |
@@ -61,7 +61,7 @@ As of the last commit on `main`:
 | 1 | Analyze → `MLSpec` | ✅ Complete | Planner-LLM path **and** deterministic offline fallback; high-stakes + support gates; clarifying questions |
 | 2 | Curate data | ✅ Complete | Plan → approve → build: label mapping, dedupe, seeded splits, leakage check, `DatasetCard`, uploaded files |
 | 3 | Select model | ✅ Complete | Ranked shortlist with rationale, approval gate, alternatives persisted |
-| 4 | Sandbox + baseline | 🟡 **Docker sandbox done** | Image built, isolation proven; baseline harness pending |
+| 4 | Sandbox + baseline | ✅ Complete | GPU harness via `baseline_eval` job: seeded subset, greedy decoding, strict parsing, `EvalRun` + reproducibility bundle |
 | 5 | Training planner | ⬜ Not started | |
 | 6 | Fine-tune | ⬜ Not started | |
 | 7 | Evaluate | ⬜ Not started | |
@@ -95,13 +95,16 @@ Legend: ✅ done and verified · 🟡 partially done · ⬜ not started.
   `huggingface.co` is unreachable.
 - Sign in with Hugging Face (optional; needs `HF_CLIENT_ID`/`HF_CLIENT_SECRET`
   plus a registered redirect URI — loopback works for local dev).
+- Measure a GPU baseline before training: enqueue `baseline_eval`, get accuracy /
+  macro-F1, valid-output rate, latency percentiles and peak VRAM as an `EvalRun`
+  with a reproducibility bundle (model revision, prompt, decoding, seed, indices).
 - Inspect `/api/capabilities` to see exactly what the machine can and cannot do.
 - Run untrusted code in a **real Docker sandbox** with network denial, a read-only
   root, a non-root user and CPU/memory/time limits.
 
 ### What does *not* work yet
 
-Stages 4–8 (baseline, training plan, fine-tune, evaluation,
+Stages 5–8 (training plan, fine-tune, evaluation,
 deployment) return an honest `501 Not Implemented` with the milestone that will build
 them — by design, so nothing looks finished that isn't. `docs/ROADMAP.md` is the
 source of truth for what is next. Stage 2 also carries a short list of deferred work
@@ -373,7 +376,7 @@ src/slmforge/
 web/                   Vite + React + TypeScript dashboard
 docker/sandbox.Dockerfile   the pinned, unprivileged sandbox image
 scripts/demo_smoke.py  live end-to-end check against the real API, worker and Hub
-tests/                 243 tests; external services are always mocked
+tests/                 256 tests; external services are always mocked
 docs/                  ARCHITECTURE.md, ROADMAP.md
 ```
 
@@ -545,7 +548,7 @@ If a change makes SLMForge *look* better while reporting less truthfully, it is 
 | `SSL connect error` / `WinError 10054` | Reference network resets TLS with `huggingface.co` under load | Expected. Everything routes through `net.retry_call`; prefer one remote profile then one local materialisation |
 | `UnicodeEncodeError` writing to the console | Windows legacy code page | `log.force_utf8_stdio()` handles the streams; keep CLI *output* ASCII anyway |
 | `http://127.0.0.1:5173` refused | Vite bound IPv6 only | Use `http://localhost:5173`, or `npm run build` and serve from FastAPI |
-| `torch.cuda.is_available()` is `False` on a machine with a GPU | CPU-only torch wheel | Install a CUDA wheel, or accept CPU-only (fine for the demo's baseline) |
+| `torch.cuda.is_available()` is `False` on a machine with a GPU | CPU-only torch wheel shadowing the CUDA build | `.venv` must come first on `sys.path` (it does under `uv run` / `.venv/Scripts/python`); reinstall `torch` + matching `torchvision` from the CUDA index if a global CPU build leaks through |
 | Training "succeeds" instantly with no adapter | Non-zero exit was treated as success somewhere | That is a bug — check `SandboxResult.exit_code` and report it |
 | Model cache filling the disk | `HF_HOME` outside the workspace | Keep `SLMFORGE_HF_HOME` under `./.cache/` (gitignored) and use `allow_patterns` |
 

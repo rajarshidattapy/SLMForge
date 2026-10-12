@@ -18,7 +18,7 @@ every stage.** We never build a beautiful UI for a pipeline that cannot run.
 | 1 | Prompt → `MLSpec` (analyzer) | ✅ Complete |
 | 2 | Dataset curation | ✅ Complete |
 | 3 | Model discovery & ranking | ✅ Complete |
-| 4 | Docker sandbox + baseline | 🟡 Docker sandbox **done**; baseline harness pending |
+| 4 | Docker sandbox + baseline | ✅ Complete |
 | 5 | Training planner | ⬜ Not started |
 | 6 | Fine-tuning execution | ⬜ Not started |
 | 7 | Evaluation & comparison | ⬜ Not started |
@@ -285,12 +285,38 @@ test asserting a known-good model outranks an oversized one.
 
 ---
 
-## Stage 4 — Sandbox hardening + baseline
+## Stage 4 — Sandbox hardening + baseline ✅ Complete
 
 **Goal:** isolate untrusted execution properly, then measure candidates *before*
 training.
 
-Work:
+Delivered (harness; Docker backend already landed earlier):
+
+- `BaselineStage` run exclusively through the `baseline_eval` job (the sync
+  endpoint answers 409, so inference never runs in the API process).
+- Worker-process GPU inference (CUDA torch, greedy, batch-1) with per-sample
+  latency, peak VRAM, seeded subset of the held-out test split, and the same
+  system prompt as the training data. The slim Docker image has no ML stack by
+  design, so GPU work lives in the worker; dataset input is parsed as data.
+- Strict output parsing (bare labels are invalid, fences stripped), accuracy /
+  macro-F1 / per-class / confusion, valid-output rate, schema violations, and a
+  capped error-analysis sample set — one `EvalRun` per model plus a
+  reproducibility bundle (repo, snapshot revision, device, prompt, decoding,
+  seed, indices).
+- Cheapest-first honesty: unloadable models fail the stage (selected) or are
+  recorded with errors (extras) — never a fabricated score.
+- 13 contract tests, all inference stubbed; determinism pinned by a real
+  `generate()` test after the live run proved one seed per run is not enough
+  (`generate()` consumes RNG state even when greedy — the harness reseeds per
+  sample).
+
+Exit criteria — met, verified live on the RTX 4060: SmolLM2-360M measured on
+CUDA (revision pinned, 0.7 GB peak), two seeded runs agree token-for-token, a
+bogus model id fails loudly, `baseline_eval` enqueues (201) while the sync
+endpoint still 409s. The Docker `deny` isolation proof stays with the existing
+sandbox tests.
+
+Work (as built):
 
 1. **Docker sandbox backend** — image with pinned deps, no host network by default,
    read-only base layer, writable work dir, CPU/memory/time/GPU limits, non-root
@@ -529,10 +555,10 @@ Every decision below is now encoded in `config.py` / `.env.example`.
    `billingMode: prepaid`. `hf_jobs` (GPU training) and `hf_endpoint` (hosted
    endpoint) both need a paid plan or prepaid credits. Until then: train locally,
    serve locally.
-2. **Local GPU needs a CUDA build of torch.** The installed torch is `2.10.0+cpu`, so
-   `torch.cuda.is_available()` is `False` despite the RTX 4060 (8 GB) being present.
-   Local QLoRA on a ~0.5B model is only practical after installing a CUDA wheel
-   (~2.5 GB, free, and F: has ~59 GB free). Otherwise the demo is CPU-only and slow.
+2. **Local GPU is active.** `.venv` carries torch `2.11.0+cu128` (plus a matching
+   `torchvision`, shadowing the global CPU builds), so `torch.cuda.is_available()`
+   is `True` on the RTX 4060 (8 GB). Baseline and training measure real GPU
+   numbers; the Docker sandbox image stays CPU-only by design.
 
 ### Free alternatives to Hugging Face paid compute
 
